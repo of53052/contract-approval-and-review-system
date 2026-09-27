@@ -148,6 +148,66 @@ class AnchorBuilder:
                 )
         return AnchorResult(level=AnchorLevel.NONE, source=AnchorSource.NATIVE_TEXT)
 
+    def locate_clause(self, quote: str) -> list[AnchorResult]:
+        """整条条款的锚点：按页切分，每页产出一个段落级锚点。
+
+        **为什么不能用 `locate()` 代替**：`_from_real_range` 取
+        `_page_of(char_start)` 后把区间截断到该页，因此跨页条款
+        （如"第九条"标题在第 1 页、正文延续到第 2 页）只能拿到**首页**
+        的 bbox——看起来是精确命中，实际只盖住了半条，比段落级降级更误导。
+
+        本方法复用 `locate()` 已算出的全文字符区间（它是全文坐标，跨页时
+        依然正确），再按页切成多个锚点，保证整条条款的每一页都被覆盖。
+
+        **级别固定 `PARAGRAPH`**：锚定对象是"整条条款"而非精确子串，
+        因此不带字符区间——满足 data-model §5.7 的不变量
+        （`anchor_level='paragraph'` ⟹ `char_start`/`char_end` 为 NULL）。
+        """
+        located = self.locate(quote)
+        if not located.anchored or located.char_start is None or located.char_end is None:
+            return []
+        # 只接受**精确且完整**的命中：片段命中（partial）说明只有引用的一部分
+        # 能在原文定位，此时按整条条款产出锚点会框住用户看不到对应文字的区域，
+        # 反而比退回块级更误导。调用方在返回空列表时会退回 `locate_block`。
+        if located.level is not AnchorLevel.EXACT or located.partial:
+            logger.info(
+                "条款级锚定未获精确命中（level=%s partial=%s），退回块级: %r",
+                located.level, located.partial, quote[:30],
+            )
+            return []
+        return self._split_range_by_page(located.char_start, located.char_end)
+
+    def _split_range_by_page(
+        self, char_start: int, char_end: int
+    ) -> list[AnchorResult]:
+        """把全文区间按页切分，每页产出一个段落级锚点。
+
+        某页内区间全为空白时**跳过**该页，而不是造一个无意义的框
+        （与 `locate()` 的处理口径一致：宁可少一个锚点，不伪造位置）。
+        """
+        out: list[AnchorResult] = []
+        for page in self.doc.pages:
+            base = self.doc.page_offset(page.page_no)
+            local_start = max(0, char_start - base)
+            local_end = min(len(page.text), char_end - base)
+            if local_start >= local_end:
+                continue
+            bbox = page.bbox_for_range(local_start, local_end)
+            if bbox is None:
+                continue
+            out.append(AnchorResult(
+                level=AnchorLevel.PARAGRAPH,
+                page_no=page.page_no,
+                bbox=bbox,
+                char_start=None,
+                char_end=None,
+                # 只放该页对应的片段：跨页条款会有多条锚点，
+                # 若每条都带整条条款原文，报告里会重复显示同一段话。
+                quote_text=page.text[local_start:local_end][:512] or None,
+                source=AnchorSource.NATIVE_TEXT,
+            ))
+        return out
+
     # ---------------- 匹配实现 ----------------
 
     def _match_raw(

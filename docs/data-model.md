@@ -151,7 +151,7 @@
 | | `ocr` | OCR 识别 |
 | `AnchorLevel` | `exact` | 精确匹配 |
 | | `fuzzy` | 模糊匹配 |
-| | `paragraph` | 降级到段落级 |
+| | `paragraph` | 降级到条款/段落级 |
 | | `none` | 无法锚定 |
 | `FileFormat` | `docx` | Word 文档 |
 | | `pdf` | 文本型 PDF |
@@ -756,7 +756,7 @@ erDiagram
 > |---|---|---|
 > | `exact` | `search_for` 精确命中 | 精确高亮 |
 > | `fuzzy` | 归一化后模糊命中 | 精确高亮 + 提示"近似匹配" |
-> | `paragraph` | 降级到段落级 | 整段高亮 |
+> | `paragraph` | 降级到条款级（整条条款，跨页按页切分） | 整条高亮 |
 > | `none` | 无法定位 | **不写行**，改标 `unanchored=1` |
 
 ---

@@ -33,6 +33,17 @@ DOCX 分页依赖 WPS COM，需要交互式桌面会话，容器里跑不了（`
 
 ## 2. 快速开始
 
+### 2.0 一键启动（推荐）
+
+```powershell
+python scripts\start_all.py --open    # 起基础设施 → 建表播种 → 三个服务 → 打开浏览器
+```
+
+脚本按依赖顺序执行并逐项探活，已就绪的环节自动跳过，可反复执行。
+停止：`python scripts\stop_all.py`（加 `--infra` 连容器一起停）。
+
+下面是分步说明，便于排查单点问题。
+
 ### 2.1 前置
 
 | 项 | 要求 |
@@ -212,6 +223,8 @@ contract-approval-and-review-system/
 │   └── expected/              人工标注的期望风险点（回归断言集）
 │
 └── scripts/
+    ├── start_all.py           一键启动
+    ├── stop_all.py            一键停止
     ├── check_env.py           环境自检
     ├── check_consistency.py   数据一致性检查 C1~C8
     ├── seed_data.py           规则库 / 示范条款 / 黑名单种子
@@ -241,3 +254,4 @@ contract-approval-and-review-system/
 | 风险卡片有"未锚定"标记 | LLM 引用无法定位到原文，属防幻觉闸门正常工作，需人工核查 |
 | 回写失败 | 看 `GET /api/contracts/{id}/writeback/status` 的 `error_detail` |
 | 前端 `/api` 请求 404 | 后端没起，或 `vite.config.ts` 代理目标端口不对 |
+| 端口被占用（8000/8010/5173） | `python scripts\stop_all.py` 收尾；它只杀本项目进程，无关进程会跳过并打印命令行 |

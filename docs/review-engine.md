@@ -106,7 +106,8 @@ pending
 | ①-b | `_match_compact` | 去空白后包含（跨行引用） | `exact` |
 | ①-c | `_match_fragment` | 按标点切片段，锚定最长可定位片段 | 命中片段本身的 level，`partial=True` |
 | ② | `_match_fuzzy` | 归一化 + 等长窗口相似度 ≥ 0.72 | `fuzzy` |
-| ③ | `locate_block` | 知道条款位置但引用定位不到 | `paragraph` |
+| ③ | `locate_clause` | 知道属于哪条条款但引用定位不到（PRESENCE 类规则） | `paragraph`，按页切分，覆盖整条条款 |
+| ③' | `locate_block` | 条款正文整体无法精确定位时的兜底 | `paragraph`，仅覆盖起始块 |
 
 **全部失败** → `level=none`，上层把 `risk_item.unanchored` 置 1，**不写 anchor 行、不伪造位置**。
 
@@ -148,7 +149,10 @@ LLM 研判:  MockProvider（真实端点另测通过）
 | 4 | medium | rule | paragraph | 保密义务无期限 |
 | 5 | medium | rule | paragraph | 不可抗力无通知时效 |
 
-> `paragraph` 级的项是 `GLOBAL` 类问题（必备条款缺失 / 无固定位置），按设计只定位到条款段。
+> `paragraph` 级的项是 `GLOBAL` 类问题（必备条款缺失 / 无固定位置）。
+> 它们锚定**整条条款**（含标题与正文；跨页条款按页各产出一个锚点），
+> 因此点风险卡片时高亮的是完整条款，而不是只有标题行。
+> 锚定对象是整条而非命中子串，按 `data-model.md` §5.7 的不变量不带字符区间。
 
 ---
 

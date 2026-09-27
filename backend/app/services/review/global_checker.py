@@ -31,10 +31,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AnchoredRisk:
-    """完成锚定与闸门检查的风险项。"""
+    """完成锚定与闸门检查的风险项。
+
+    `anchors` 是**列表**：一条风险可能落在多个位置——跨页条款按页各一个，
+    或将来"同一风险横跨多个条款"的场景。为空表示无法定位。
+    """
 
     risk: MergedRisk
-    anchor: AnchorResult | None
+    anchors: list[AnchorResult]
     #: 引用无法锚定时为 True，落库到 `risk_item.unanchored`
     unanchored: bool
 
@@ -71,8 +75,8 @@ class HallucinationGate:
         """对全部风险项执行闸门检查。"""
         outcome = GateOutcome(items=[])
         for risk in risks:
-            anchor = self._anchor(risk)
-            unanchored = anchor is None or not anchor.anchored
+            anchors = self._anchor(risk)
+            unanchored = not anchors
             if unanchored:
                 logger.info("风险项无法锚定原文，标记 unanchored: %r", risk.title)
                 outcome.unanchored_count += 1
@@ -82,7 +86,7 @@ class HallucinationGate:
                 outcome.need_review_count += 1
 
             outcome.items.append(AnchoredRisk(
-                risk=risk, anchor=anchor, unanchored=unanchored
+                risk=risk, anchors=anchors, unanchored=unanchored
             ))
 
         logger.info(
@@ -91,26 +95,35 @@ class HallucinationGate:
         )
         return outcome
 
-    def _anchor(self, risk: MergedRisk) -> AnchorResult | None:
-        """尝试锚定风险的引用片段。
+    def _anchor(self, risk: MergedRisk) -> list[AnchorResult]:
+        """尝试锚定风险，返回锚点列表（空列表表示无法定位）。
 
-        引用为空时退回"按条款定位"——规则命中可能没给出精确引用
-        （如存在性检查），但知道它属于哪条条款。
+        优先级：
+        1. 引用可精确定位 → 用精确锚点（最可信）
+        2. 知道属于哪条条款 → **整条条款**（按页切分，覆盖标题与正文）
+        3. 条款下标非法 → 记录警告并放弃
         """
         if risk.quote:
             result = self.builder.locate(risk.quote)
             if result.anchored:
-                return result
+                return [result]
 
         if risk.clause_index is not None:
             if 0 <= risk.clause_index < len(self.clauses):
                 clause = self.clauses[risk.clause_index]
-                return self.builder.locate_block(clause.page_no, clause.para_index)
+                # 整条条款优先：PRESENCE 类规则没有可提取的命中子串，
+                # 只锚标题行会让用户以为风险仅涉及那一行。
+                whole = self.builder.locate_clause(clause.content)
+                if whole:
+                    return whole
+                # 兜底：条款正文跨页拼接后无法整体定位时，退回起始块
+                fallback = self.builder.locate_block(clause.page_no, clause.para_index)
+                return [fallback] if fallback.anchored else []
             logger.warning(
                 "clause_index %s 超出条款范围 [0, %s)，无法按条款锚定",
                 risk.clause_index, len(self.clauses),
             )
-        return None
+        return []
 
     def _check_legal_basis(self, risk: MergedRisk) -> None:
         """核验法律依据是否在知识库内。

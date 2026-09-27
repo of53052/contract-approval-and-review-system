@@ -481,7 +481,7 @@ def test_gate_anchors_by_quote() -> None:
     )
     outcome = HallucinationGate(builder, [clause], None).apply([risk])
     assert outcome.unanchored_count == 0
-    assert outcome.items[0].anchor.level is AnchorLevel.EXACT
+    assert outcome.items[0].anchors[0].level is AnchorLevel.EXACT
 
 
 def test_gate_falls_back_to_clause_and_marks_unanchored() -> None:
@@ -498,7 +498,7 @@ def test_gate_falls_back_to_clause_and_marks_unanchored() -> None:
         evidences=[MergedEvidence(evidence_type="llm", title="AI", detail="判定")],
     )
     outcome = HallucinationGate(AnchorBuilder(doc), [clause], None).apply([risk])
-    assert outcome.items[0].anchor.level is AnchorLevel.PARAGRAPH
+    assert outcome.items[0].anchors[0].level is AnchorLevel.PARAGRAPH
     assert outcome.unanchored_count == 0
 
 
@@ -515,7 +515,7 @@ def test_gate_marks_unanchored_when_nothing_locatable() -> None:
     outcome = HallucinationGate(AnchorBuilder(_make_doc("正文")), [], None).apply([risk])
     assert outcome.unanchored_count == 1
     assert outcome.items[0].unanchored is True
-    assert outcome.items[0].anchor is None
+    assert outcome.items[0].anchors == []
 
 
 def test_gate_flags_unverified_legal_basis() -> None:

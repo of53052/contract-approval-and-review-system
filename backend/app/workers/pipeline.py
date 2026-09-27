@@ -465,13 +465,15 @@ class Pipeline:
             self.db.add(row)
             self.db.flush()
 
-            # 锚点：只有可定位时才写行（不变量：anchor_level=none 不写库）
-            if item.anchor is not None and item.anchor.anchored:
-                a = item.anchor
+            # 锚点：只有可定位时才写行（不变量：anchor_level=none 不写库）。
+            # 一条风险可有多个锚点（跨页条款按页各一个），seq 记录其顺序。
+            for seq, a in enumerate(item.anchors):
+                if not a.anchored:
+                    continue
                 self.db.add(Anchor(
                     owner_type="risk_item",
                     owner_id=row.id,
-                    seq=0,
+                    seq=seq,
                     page_no=a.page_no,
                     bbox_x0=a.bbox[0],
                     bbox_y0=a.bbox[1],

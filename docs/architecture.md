@@ -195,6 +195,14 @@ flowchart LR
 | 可用内存 | 7.87 GB（宿主 15.86 GB 的 50%） |
 | 启动耗时 | 19 秒达 3/3 healthy |
 
+**一键启动**：`python scripts/start_all.py`（`--open` 顺带开浏览器）。
+按"前置检查 → 容器 healthy 等待 → alembic 建表 → 种子数据 → 三个服务探活"顺序执行，
+已就绪的环节自动跳过（幂等）。停止用 `python scripts/stop_all.py`（`--infra` 连容器一起停）。
+
+> 停止脚本只终止 `.run/*.json` 记录过的 PID；记录缺失时按端口反查，
+> 且要求命令行同时含 `uvicorn`/`vite` 与 `--port <端口>` 才认定为本项目进程，
+> 避免误杀恰好占用同端口的无关服务。
+
 ---
 
 ## 5. 文档解析引擎
@@ -344,7 +352,7 @@ flowchart TD
     M1 -->|命中| OK["锚定成功<br/>page + bbox"]
     M1 -->|未命中| M2{"② 模糊匹配<br/>归一化 + 相似度阈值"}
     M2 -->|命中| OK
-    M2 -->|未命中| M3["③ 降级到段落级锚点<br/>标记 anchor_level=paragraph"]
+    M2 -->|未命中| M3["③ 降级到条款级锚点<br/>标记 anchor_level=paragraph"]
     M3 --> W["标记 unanchored=true<br/>UI 提示无法定位"]
     OK --> END["写入风险项"]
     W --> END
@@ -1168,7 +1176,8 @@ LLM 用自己的措辞，两者几乎不会一致（"违约责任无上限" vs "
 **锚点级别由规则类型决定**（实测规律）：
 
 - KEYWORD / REGEX / BLACKLIST 类规则能提取命中子串 → `exact`，覆盖整段引用
-- PRESENCE 类规则（"必须包含某模式"）没有命中子串 → `paragraph`，只覆盖条款标题块
+- PRESENCE 类规则（"必须包含某模式"）没有命中子串 → `paragraph`，覆盖**整条条款**
+  （按页切分，跨页条款产出多个锚点；锚定对象是整条而非子串，因此不带字符区间）
 
 **最后一项为什么要走 PDF.js**：后端锚点由 PyMuPDF 产生，
 用 PyMuPDF 自校验是同源验证，测不出"前端坐标换算公式错"。
@@ -1252,6 +1261,8 @@ contract-approval-and-review-system/
 │   └── expected/                  # 人工标注的期望风险点（断言集）
 │
 └── scripts/
+    ├── start_all.py               # 一键启动（基础设施 → 数据 → 三个服务）
+    ├── stop_all.py                # 一键停止（含归属校验，不误杀同端口进程）
     ├── check_env.py               # 环境自检
     ├── check_consistency.py       # 数据一致性检查 C1~C8
     ├── seed_data.py               # 规则库 / 示范条款 / 黑名单种子
