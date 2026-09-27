@@ -43,9 +43,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("mock-approval")
 
+#: 版本号与主项目保持一致（主项目版本源：backend/app/__init__.py）。
+#: 本服务是独立桩服务，不共享 backend 代码，故此处独立维护、手动对齐。
+MOCK_VERSION = "0.4.0"
+
 app = FastAPI(
     title="Mock 审批系统",
-    version="1.0.0",
+    version=MOCK_VERSION,
     description="扮演外部审批系统：待办拉取 / 附件下载 / 评论写入 / 事件推送",
 )
 

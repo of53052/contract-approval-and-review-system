@@ -1,6 +1,7 @@
 [project]
 name = "contract-review-backend"
-version = "0.1.0"
+# 版本号唯一来源：backend/app/__init__.py 的 __version__（见 [tool.hatch.version]）
+dynamic = ["version"]
 description = "合同审批审查系统 - 后端服务"
 requires-python = ">=3.12"
 dependencies = [
@@ -43,6 +44,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.hatch.version]
+# 从源码读取版本号，避免 pyproject 与运行时各写一份导致漂移
+path = "app/__init__.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -610,4 +610,4 @@ npm run build        # 生产构建
 | 分支命名 | `codex/<主题>` |
 | 问题反馈 | 仓库 Issues |
 | 许可证 | **未声明**：仓库当前无 `LICENSE` 文件，默认保留全部权利。如需开源或对外分发，请先补充许可证文件 |
-| 版本一致性 | 系统版本 0.4.0（后端 `app/main.py`）；`backend/pyproject.toml` 仍为 0.1.0，尚未同步 |
+| 版本号唯一来源 | `backend/app/__init__.py` 的 `__version__`；`pyproject.toml` 经 `[tool.hatch.version]` 动态读取，`app/main.py` 与 `/health` 从此导入。`frontend/package.json` 与 `mock-approval` 为独立服务，手动对齐同一版本号 |

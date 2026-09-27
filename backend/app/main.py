@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app import __version__
 from app.api import api_router
 from app.core.config import settings
 
@@ -73,7 +74,7 @@ def _check_approval() -> tuple[bool, str]:
 
 app = FastAPI(
     title="合同审批审查系统",
-    version="0.4.0",
+    version=__version__,
     description="智能合同审查：解析 → 条款切分 → 双引擎审查 → 高亮定位 → 回写审批系统",
     lifespan=lifespan,
 )
@@ -94,7 +95,7 @@ app.include_router(api_router)
 @app.get("/health", tags=["meta"], summary="健康检查")
 def health() -> dict:
     """服务健康检查。"""
-    return {"status": "ok", "service": "contract-review-backend", "version": "0.4.0"}
+    return {"status": "ok", "service": "contract-review-backend", "version": __version__}
 
 
 @app.get("/api/meta/config", tags=["meta"], summary="前端可见的运行时配置")
