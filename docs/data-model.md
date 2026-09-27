@@ -23,7 +23,7 @@
 | P3 | **大文件不进库** | 合同原件、转换后 PDF、导出报告存 MinIO，库内只存 object key |
 | P4 | **冗余计数为列表页服务** | `risk_count` / `high_risk_count` 等冗余字段避免列表页 N+1 聚合查询 |
 | P5 | **审计信息不可省** | 状态流转、回写、LLM 调用、导出全部留痕，满足"可溯源"要求 |
-| P6 | **软删除仅用于合同** | 其余实体随合同级联硬删；避免"软删除 + 唯一约束"的已知陷阱 |
+| P6 | **软删除仅用于合同** | 其余实体随合同级联硬删；软删除与唯一约束的冲突面控制在单表内（解法见 §5.1） |
 | P7 | **时间统一 DATETIME(3)** | 毫秒精度，时区统一 +08:00（由容器参数保证） |
 
 ### 1.1 命名约定
@@ -223,6 +223,7 @@ erDiagram
         char file_hash
         varchar file_format
         datetime deleted_at
+        datetime deleted_key
     }
     review_task {
         bigint id PK
@@ -406,7 +407,8 @@ erDiagram
 | `pdf_object_key` | VARCHAR(512) | ✅ | NULL | 转换后 PDF 的 object key（统一渲染用） |
 | `source` | VARCHAR(16) | ❌ | `upload` | `upload` / `approval_sync` |
 | `external_id` | VARCHAR(128) | ✅ | NULL | 审批系统中的单号 |
-| `deleted_at` | DATETIME(3) | ✅ | NULL | 软删除标记 |
+| `deleted_at` | DATETIME(3) | ✅ | NULL | 软删除标记；NULL = 活跃 |
+| `deleted_key` | DATETIME(3) | — | 生成列 | `IFNULL(deleted_at, '1970-01-01 00:00:00.000')`，**仅参与唯一键，不可写入** |
 | `created_at` | DATETIME(3) | ❌ | NOW(3) | — |
 | `updated_at` | DATETIME(3) | ❌ | NOW(3) | ON UPDATE |
 
@@ -414,7 +416,7 @@ erDiagram
 
 | 名称 | 列 | 类型 | 用途 |
 |---|---|---|---|
-| `uk_file_hash` | `file_hash`, `deleted_at` | UNIQUE | 去重；`deleted_at` 参与唯一键以允许"删除后重传" |
+| `uk_file_hash` | `file_hash`, `deleted_key` | UNIQUE | 去重；用生成列而非 `deleted_at` 本身（见下方说明） |
 | `idx_business_type` | `business_type` | 普通 | 按业务类型筛选 |
 | `idx_created_at` | `created_at` | 普通 | 大盘页默认排序 |
 | `idx_external_id` | `external_id` | 普通 | 审批系统单号反查 |
@@ -425,9 +427,52 @@ erDiagram
 - `pdf_object_key` 在解析成功后必须非空；`blocked` 状态下可为空
 - `amount` 为负数时拒绝写入（应用层校验）
 
-> ⚠️ **为什么 `deleted_at` 进唯一键**：MySQL 唯一索引中 NULL 不参与唯一性判断，
-> 因此未删除行（`deleted_at IS NULL`）之间会正常判重，而软删除行（非 NULL）
-> 不阻塞新记录。这是"软删除 + 唯一约束"的标准解法。
+> ⚠️ **为什么用生成列 `deleted_key` 而不是直接拿 `deleted_at` 进唯一键**
+>
+> **直觉上**「NULL 不参与唯一性判断，所以未删除行之间会正常判重」——**这个直觉是错的**。
+> 实测（MySQL 8.4 与 SQLite 行为一致）：
+>
+> ```sql
+> UNIQUE KEY uk(file_hash, deleted_at)   -- deleted_at 可为 NULL
+> INSERT INTO contract(file_hash, deleted_at) VALUES('abc', NULL);  -- 成功
+> INSERT INTO contract(file_hash, deleted_at) VALUES('abc', NULL);  -- 也成功！行数 = 2
+> ```
+>
+> SQL 标准中 **NULL 表示"不确定"，任何值都不与它冲突，包括另一个 NULL**。
+> 因此若直接让可空的 `deleted_at` 进唯一键，去重会**完全失效**——同一份文件可被
+> 重复插入任意多次。
+>
+> **正确做法**：用一个 `NOT NULL` 的生成列把 NULL 归一化为哨兵值，
+> 让唯一键作用在生成列上：
+>
+> ```sql
+> deleted_at  DATETIME(3) NULL,
+> deleted_key DATETIME(3) GENERATED ALWAYS AS (IFNULL(deleted_at, '1970-01-01 00:00:00.000')) STORED,
+> UNIQUE KEY uk_file_hash(file_hash, deleted_key)
+> ```
+>
+> **实测验证**（MySQL 8.4）：
+>
+> | 场景 | 结果 |
+> |---|---|
+> | 首次插入 `(abc, NULL)` | ✅ 成功，`deleted_key` = 哨兵值 |
+> | 重复插入 `(abc, NULL)` | ✅ 被拒 `ERROR 1062 Duplicate entry 'abc-1970-01-01...'` |
+> | 软删除后重传同名文件 | ✅ 成功（`deleted_at` 有值，`deleted_key` 不同） |
+> | 恢复软删除行（与活跃行冲突） | ✅ 被拒 `ERROR 1062` |
+> | 应用层误写 `deleted_key` | ✅ 被拒 `ERROR 3105`（生成列不可写） |
+>
+> **收益**：`deleted_at` 保持 `NULL` 语义干净（查询里写 `deleted_at IS NULL` 即可，
+> 不必到处比对哨兵值），唯一性由数据库强制保证。
+>
+> **数据库兼容性**（若将来迁 SQLite，写法需调整）：
+>
+> | 数据库 | 生成列写法 |
+> |---|---|
+> | MySQL 8.4 | `GENERATED ALWAYS AS (IFNULL(deleted_at, '1970-01-01 00:00:00.000')) STORED` |
+> | SQLite 3.31+ | `GENERATED ALWAYS AS (COALESCE(deleted_at, '1970-01-01 00:00:00.000')) STORED` |
+>
+> 注意：SQLite 不支持 `DATETIME` 类型，需改用 `TEXT`。
+> 这也印证了 §附录B 的选型结论——**本项目选用 MySQL，正是为了避开这类类型系统差异**。
 
 ---
 
@@ -1119,13 +1164,77 @@ stateDiagram-v2
 | D4 | `clause` 内嵌位置，`risk_item` 走 anchor | 两者都走 anchor | 条款位置是文档固有属性，非分析产物 |
 | D5 | 冗余计数写入 `review_task` | 列表页实时聚合 | 避免 N+1；用一致性检查脚本兜底 |
 | D6 | 软删除仅用于 `contract` | 全部软删除 | 避免唯一约束与软删除的冲突面扩大 |
-| D7 | `deleted_at` 进唯一键 | 应用层判重 | 允许"删除后重传同名文件" |
+| D7 | 用 `deleted_key` 生成列进唯一键 | ① `deleted_at` 直接进唯一键；② 纯应用层判重 | ① 可空列进唯一键时 NULL 之间不冲突，去重失效（实测）；② 应用层判重有并发竞态，DB 唯一键才是可靠兜底 |
 | D8 | `risk_evidence` 独立成表 | 存 JSON 在 `risk_item` | 依据需多来源、需独立标记 `need_review` |
 | D9 | `parse_result` 保留历史 | 覆盖更新 | 支持解析对比；记录降级链 |
 | D10 | `writeback_log` 落库前先写 `writing` | 直接调接口 | 防止进程崩溃导致回写状态丢失 |
+| D11 | **数据库选 MySQL 8.4** | SQLite | 见 §9.1 专项论证（金额精度 / JSON 类型 / ALTER 能力） |
 
 ---
 
+### 9.1 数据库选型论证（MySQL vs SQLite）
+
+> 曾评估切换 SQLite 以省去容器依赖。**结论：继续用 MySQL**，依据如下实测数据。
+
+**决定性因素 1：SQLite 没有真正的 DECIMAL，影响金额计算**
+
+实测（Python 3.12 自带 SQLite 3.49.1）：
+
+| 表达式 | SQLite（`DECIMAL(18,2)` 实为 REAL） | MySQL（真 DECIMAL） |
+|---|---|---|
+| `0.1 + 0.2` | `0.30000000000000004` | `0.3` |
+| `0.1 + 0.2 = 0.3` | `0`（假） | `1`（真） |
+| `1.005 * 100` | `100.49999999999999` | `100.500` |
+
+且 SQLite 的 `DECIMAL(18,2)` 只是**类型亲和性**提示，不做强制：
+
+```python
+c.execute("CREATE TABLE t(a DECIMAL(18,2))")
+c.execute("INSERT INTO t VALUES('abc')")   # 允许，typeof(a) = 'text'
+```
+
+**对本项目的直接影响**：架构文档 §8.5 的规则「违约金比例 > 20%」需要精确比较。
+若金额用浮点，`100.49999...` 这类值会导致比例判断出错。
+应用层可用 Python `Decimal` + SQLAlchemy `Numeric` 绕过，但**一旦有人直接写 SQL 即破防**。
+
+**决定性因素 2：SQLite 无原生 JSON 类型**
+
+`rule.config` 设计为 JSON（如 `{"threshold": 0.20}`）。SQLite 仅有 JSON1 扩展函数，
+无原生列类型与校验。
+
+**决定性因素 3：SQLite 的 ALTER TABLE 能力极弱**
+
+不支持删列、改列类型、加约束。改表结构只能"建新表 + 拷数据 + 删旧表"。
+**这恰恰意味着 SQLite 更需要迁移工具（Alembic），而非不需要。**
+
+> ⚠️ 常见误解：「用 SQLite 就不用 Alembic 迁移」。**反了。**
+> SQLite 的 schema 演进能力更弱，手写变更脚本更易出错，更需要版本化管理。
+
+**其他维度对比**
+
+| 维度 | MySQL 8.4 容器 | SQLite |
+|---|---|---|
+| 金额精度 | ✅ 精确 DECIMAL | ❌ REAL 浮点 |
+| JSON 字段 | ✅ 原生类型 | ⚠️ 仅 JSON1 扩展 |
+| 并发写 | ✅ 行级锁 | ⚠️ 库级锁 |
+| 生成列 | ✅ `STORED` / `VIRTUAL` | ✅ 3.31+ 支持（语法略异） |
+| `ON UPDATE CURRENT_TIMESTAMP` | ✅ 支持 | ❌ 需应用层维护 |
+| 零配置 | ❌ 需容器 | ✅ 单文件 |
+| 本项目已投入 | ✅ 容器运行、凭据配好、已验证 | 需重来 |
+
+**结论**：唯一优势是"零配置"，但在**已确立"基础设施容器化"**的前提下，
+容器已运行、凭据已参数化，MySQL 对本项目是**零额外成本**。
+综合精度、类型系统、并发三项，选 MySQL。
+
+**若将来必须迁 SQLite**，需改动：
+
+- 类型映射：`BIGINT UNSIGNED`→`INTEGER`、`DATETIME(3)`→`TEXT`、`TINYINT`→`INTEGER`、`MEDIUMTEXT`→`TEXT`
+- `ON UPDATE CURRENT_TIMESTAMP` 全部改为应用层维护
+- 生成列 `IFNULL`→`COALESCE`
+- `GROUP_CONCAT`→`group_concat`
+- 索引与一致性检查清单复核
+
+---
 ## 10. 一致性检查
 
 > 多态关联与冗余字段带来一致性风险，用**应用层检查脚本**兜底（不用触发器）。
@@ -1149,7 +1258,7 @@ stateDiagram-v2
 
 | 表 | 索引 | 类型 | 支撑的查询 |
 |---|---|---|---|
-| `contract` | `uk_file_hash` | UNIQUE | 去重 |
+| `contract` | `uk_file_hash` | UNIQUE | 去重（`file_hash` + `deleted_key` 生成列） |
 | | `idx_business_type` | 普通 | 业务类型筛选 |
 | | `idx_created_at` | 普通 | 大盘页排序 |
 | | `idx_external_id` | 普通 | 审批单号反查 |
@@ -1302,3 +1411,5 @@ class ReviewConclusion(StrEnum):
 | 3 | 是否需要合同版本管理（同一合同多次修订） | 当前设计为"一份合同一条记录"，修订需新记录 |
 | 4 | 批注是否需支持回复/线程 | 当前为平铺列表 |
 | 5 | 阈值表的法务校准 | 阶段二 |
+| 6 | ~~数据库选型（MySQL vs SQLite）~~ | ✅ **已决策：MySQL**，见 §9.1 |
+| 7 | ~~软删除唯一键失效问题~~ | ✅ **已修正**：改用 `deleted_key` 生成列，见 §5.1 |
