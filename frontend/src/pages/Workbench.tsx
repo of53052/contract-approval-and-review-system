@@ -13,6 +13,7 @@ import {
   Alert,
   Button,
   Card,
+  Dropdown,
   Empty,
   Flex,
   Segmented,
@@ -22,10 +23,17 @@ import {
   Typography,
   App as AntApp,
 } from "antd";
-import { ArrowLeftOutlined, ReloadOutlined } from "@ant-design/icons";
+import {
+  ArrowLeftOutlined,
+  DownloadOutlined,
+  ExportOutlined,
+  FileTextOutlined,
+  ReloadOutlined,
+} from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import {
+  exportReport,
   getContract,
   getTaskProgress,
   listClauses,
@@ -33,13 +41,15 @@ import {
   listMetadata,
   listRisks,
   originalUrl,
+  previewReport,
   retryTask,
 } from "../api";
 import { apiError } from "../api/client";
-import type { RiskItem } from "../types";
+import type { ExportFormat, RiskItem } from "../types";
 import PdfViewer from "../components/PdfViewer";
 import RiskCard from "../components/RiskCard";
 import WritebackBar from "../components/WritebackBar";
+import { renderReportMarkdown } from "../lib/reportMarkdown";
 import {
   BUSINESS_TYPE_LABEL,
   METADATA_LABEL,
@@ -53,7 +63,7 @@ export default function Workbench() {
   const contractId = Number(id);
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
 
   const [activeRiskId, setActiveRiskId] = useState<number | null>(null);
   const [flashRiskId, setFlashRiskId] = useState<number | null>(null);
@@ -120,6 +130,36 @@ export default function Workbench() {
       message.success("已提交重试，正在重新解析");
       qc.invalidateQueries({ queryKey: ["contract", contractId] });
       qc.invalidateQueries({ queryKey: ["task-progress", taskId] });
+    },
+    onError: (e) => message.error(apiError(e)),
+  });
+
+  /** 预览报告：拉取 Markdown 原文，按 Markdown 渲染后弹窗展示（不落存储）。 */
+  const previewMut = useMutation({
+    mutationFn: () => previewReport(contractId),
+    onSuccess: (r) => {
+      modal.info({
+        title: `审查报告预览（${r.char_count} 字符）`,
+        width: 820,
+        content: (
+          <div className="report-markdown" style={{ maxHeight: 520, overflow: "auto" }}>
+            {renderReportMarkdown(r.markdown)}
+          </div>
+        ),
+      });
+    },
+    onError: (e) => message.error(apiError(e)),
+  });
+
+  /** 导出报告。格式二选一：Markdown 便于留痕/机读，PDF 用于归档/发送。 */
+  const exportMut = useMutation({
+    mutationFn: (format: ExportFormat) => exportReport(contractId, format),
+    onSuccess: (r) => {
+      message.success(
+        `已导出 ${r.format === "pdf" ? "PDF" : "Markdown"} 报告（${formatBytes(r.file_size)}）`,
+      );
+      window.open(r.download_url, "_blank");
+      qc.invalidateQueries({ queryKey: ["report-exports", contractId] });
     },
     onError: (e) => message.error(apiError(e)),
   });
@@ -227,11 +267,46 @@ export default function Workbench() {
             )}
             <Button
               size="small"
+              icon={<DownloadOutlined />}
               href={originalUrl(contractId)}
               target="_blank"
             >
               下载原件
             </Button>
+            <Button
+              size="small"
+              icon={<FileTextOutlined />}
+              loading={previewMut.isPending}
+              onClick={() => previewMut.mutate()}
+            >
+              预览报告
+            </Button>
+            {/* 导出格式二选一：Markdown 便于留痕/机读，PDF 用于归档/发送 */}
+            <Dropdown
+              menu={{
+                items: [
+                  {
+                    key: "markdown",
+                    label: "Markdown（便于留痕 / 机读）",
+                    onClick: () => exportMut.mutate("markdown"),
+                  },
+                  {
+                    key: "pdf",
+                    label: "PDF（精排版，用于归档 / 发送）",
+                    onClick: () => exportMut.mutate("pdf"),
+                  },
+                ],
+              }}
+              disabled={c.status !== "completed" || exportMut.isPending}
+            >
+              <Button
+                size="small"
+                icon={<ExportOutlined />}
+                loading={exportMut.isPending}
+              >
+                导出报告
+              </Button>
+            </Dropdown>
           </Space>
         </Flex>
       </Card>

@@ -1,7 +1,8 @@
 /**
- * 底部协同回写栏（架构 §11.4 B1~B4）。
+ * 底部协同回写栏（架构 §11.4 B1~B3）。
  *
- * 职责：展示综合结论 → 填写法务批注 → 一键回写审批系统 → 导出报告。
+ * 职责：展示综合结论 → 填写法务批注 → 一键回写审批系统。
+ * 报告预览与导出不在此栏，见工作台顶栏（`pages/Workbench.tsx`）。
  * 回写是**幂等**的：后端按内容 hash 生成 idempotency_key，重复点击复用同一记录。
  */
 import { useState } from "react";
@@ -9,26 +10,22 @@ import {
   Alert,
   Button,
   Divider,
-  Dropdown,
   Flex,
   Input,
-  Modal,
   Space,
   Tag,
   Typography,
   App as AntApp,
 } from "antd";
-import { ExportOutlined, SendOutlined } from "@ant-design/icons";
+import { SendOutlined } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createAnnotation,
-  exportReport,
-  previewReport,
   writeback,
   writebackStatus,
 } from "../api";
 import { apiError } from "../api/client";
-import type { ContractDetail, ExportFormat } from "../types";
+import type { ContractDetail } from "../types";
 import { CONCLUSION_META, RISK_META, WRITEBACK_META } from "../constants";
 
 interface Props {
@@ -63,7 +60,6 @@ export default function WritebackBar({ contract, selectedRiskId, onWrittenBack }
       message.success("批注已保存");
       setComment("");
       qc.invalidateQueries({ queryKey: ["annotations", contract.id] });
-      qc.invalidateQueries({ queryKey: ["report-preview", contract.id] });
     },
     onError: (e) => message.error(apiError(e)),
   });
@@ -81,43 +77,6 @@ export default function WritebackBar({ contract, selectedRiskId, onWrittenBack }
       qc.invalidateQueries({ queryKey: ["writeback-status", contract.id] });
       qc.invalidateQueries({ queryKey: ["contracts"] });
       onWrittenBack();
-    },
-    onError: (e) => message.error(apiError(e)),
-  });
-
-  const previewMut = useMutation({
-    mutationFn: () => previewReport(contract.id),
-    onSuccess: (r) => {
-      Modal.info({
-        title: `审查报告预览（${r.char_count} 字符）`,
-        width: 760,
-        content: (
-          <pre
-            style={{
-              maxHeight: 460,
-              overflow: "auto",
-              background: "#fafafa",
-              padding: 12,
-              fontSize: 12,
-              whiteSpace: "pre-wrap",
-            }}
-          >
-            {r.markdown}
-          </pre>
-        ),
-      });
-    },
-    onError: (e) => message.error(apiError(e)),
-  });
-
-  const exportMut = useMutation({
-    mutationFn: (format: ExportFormat) => exportReport(contract.id, format),
-    onSuccess: (r) => {
-      message.success(
-        `已导出 ${r.format === "pdf" ? "PDF" : "Markdown"} 报告（${r.file_size} 字节）`,
-      );
-      window.open(r.download_url, "_blank");
-      qc.invalidateQueries({ queryKey: ["report-exports", contract.id] });
     },
     onError: (e) => message.error(apiError(e)),
   });
@@ -195,33 +154,6 @@ export default function WritebackBar({ contract, selectedRiskId, onWrittenBack }
           >
             写回审批意见
           </Button>
-          <Space size={4}>
-            <Button onClick={() => previewMut.mutate()} loading={previewMut.isPending}>
-              预览报告
-            </Button>
-            {/* 导出格式二选一：Markdown 便于留痕与机读，PDF 用于归档与发送 */}
-            <Dropdown
-              menu={{
-                items: [
-                  {
-                    key: "markdown",
-                    label: "Markdown（便于留痕 / 机读）",
-                    onClick: () => exportMut.mutate("markdown"),
-                  },
-                  {
-                    key: "pdf",
-                    label: "PDF（精排版，用于归档 / 发送）",
-                    onClick: () => exportMut.mutate("pdf"),
-                  },
-                ],
-              }}
-              disabled={contract.status !== "completed" || exportMut.isPending}
-            >
-              <Button icon={<ExportOutlined />} loading={exportMut.isPending}>
-                导出
-              </Button>
-            </Dropdown>
-          </Space>
         </Space>
       </Flex>
 

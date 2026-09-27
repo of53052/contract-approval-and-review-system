@@ -154,3 +154,111 @@ body {
   0% { box-shadow: 0 0 0 0 rgba(22, 119, 255, 0.6); }
   100% { box-shadow: 0 0 0 12px rgba(22, 119, 255, 0); }
 }
+
+/* ==================== 报告 Markdown 预览（WritebackBar 的「预览报告」） ====================
+ * 渲染逻辑在 `lib/reportMarkdown.tsx`（零依赖自研，见该文件顶部说明）。
+ * 这里只负责观感，与 PDF 精排版（backend/app/services/report_pdf.py）保持同一套
+ * 视觉语言：标题分级、表格细边框、引用块左侧竖线。
+ */
+.report-markdown {
+  font-size: 13px;
+  line-height: 1.7;
+  color: #1f1f1f;
+  word-break: break-word;
+}
+
+.report-markdown .report-h {
+  font-weight: 600;
+  color: #141414;
+  line-height: 1.4;
+}
+
+.report-markdown .report-h1 {
+  font-size: 18px;
+  margin: 0 0 8px 0;
+}
+
+.report-markdown .report-h2 {
+  font-size: 15px;
+  margin: 18px 0 8px 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.report-markdown .report-h3 {
+  font-size: 14px;
+  margin: 14px 0 6px 0;
+}
+
+.report-markdown .report-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 6px 0 10px 0;
+}
+
+.report-markdown .report-table th,
+.report-markdown .report-table td {
+  border: 1px solid #f0f0f0;
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.report-markdown .report-table th {
+  background: #fafafa;
+  color: #595959;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.report-markdown .report-list {
+  margin: 4px 0 10px 0;
+  padding-left: 22px;
+}
+
+.report-markdown .report-list li {
+  margin-bottom: 2px;
+}
+
+.report-markdown .report-quote {
+  margin: 6px 0 10px 0;
+  padding: 4px 10px;
+  border-left: 3px solid #d9d9d9;
+  background: #fafafa;
+  color: #434343;
+}
+
+.report-markdown .report-hr {
+  margin: 16px 0;
+  border: none;
+  border-top: 1px solid #f0f0f0;
+}
+
+.report-markdown .report-inline-code {
+  background: #f5f5f5;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 12px;
+  color: #c41d7f;
+}
+
+.report-markdown .report-details {
+  margin: 6px 0 10px 0;
+  border: 1px solid #f0f0f0;
+  border-radius: 4px;
+  padding: 6px 10px;
+  background: #fcfcfc;
+}
+
+.report-markdown .report-details > summary {
+  cursor: pointer;
+  color: #595959;
+  font-size: 12px;
+  user-select: none;
+}
+
+.report-markdown .report-details-body {
+  margin-top: 6px;
+  padding-left: 4px;
+  border-left: 2px solid #f0f0f0;
+}

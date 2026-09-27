@@ -876,6 +876,12 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
+    subgraph TOP["顶部 · 工具条"]
+        T1["下载原件"]
+        T2["预览报告"]
+        T3["导出报告"]
+    end
+
     subgraph LEFT["左侧 · 合同正文"]
         L1["PDF.js 渲染"]
         L2["文本层高亮<br/>char_range"]
@@ -894,14 +900,12 @@ flowchart LR
         B1["风险评估摘要"]
         B2["法务批注输入"]
         B3["一键回写"]
-        B4["导出报告"]
     end
 
     R1 -->|"点击"| L2
     L2 -->|"点击高亮"| R1
     R4 --> B1
     B2 --> B3
-    B3 --> B4
 ```
 
 **双向锚定的实现要点**
@@ -1033,6 +1037,7 @@ flowchart TD
 
 ┌───────────────────────────────────────────────────────────────┐
 │  智能审查工作台                                                │
+│  [下载原件] [预览报告] [导出报告]                             │
 │  ┌──────────────────────────┬──────────────────────────────┐  │
 │  │ 合同正文（PDF.js）        │ 审查结果与建议                │  │
 │  │ ┌──────────────────────┐ │ ┌──────────────────────────┐ │  │
@@ -1051,7 +1056,7 @@ flowchart TD
 │  │                          │ │ ┌──────────────────────┐ │ │  │
 │  │                          │ │ │ 法务批注…            │ │ │  │
 │  │                          │ │ └──────────────────────┘ │ │  │
-│  │                          │ │ [写回审批意见] [导出报告] │ │  │
+│  │                          │ │ [写回审批意见]            │ │  │
 │  │                          │ └──────────────────────────┘ │  │
 │  └──────────────────────────┴──────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────┘
@@ -1261,6 +1266,7 @@ contract-approval-and-review-system/
 │   │   ├── pages/                 # 大盘页 / 工作台
 │   │   ├── components/            # PdfViewer / RiskCard / WritebackBar
 │   │   ├── lib/                   # anchorCoords（锚点坐标换算，前后端契约唯一实现）
+│   │   │                          # reportMarkdown（报告 Markdown → React 节点，零依赖）
 │   │   ├── api/                   # 接口封装
 │   │   └── types/                 # 与后端 schemas 对应的类型
 │   ├── scripts/                   # verify_anchors.mjs（锚点坐标校验）
@@ -1667,7 +1673,7 @@ service   high / reject  高=5 中=2  — 7 项（含「知识产权全部转让
 | PDF 渲染 | `backend/app/services/report_pdf.py`：`render_html`（数据 → HTML）+ `render_pdf`（HTML → 多页 A4） |
 | 导出分发 | `report_service.export_report(fmt=...)`，Markdown 与 PDF 共用 `_store_report` 上传/登记 |
 | 接口 | `POST /api/contracts/{id}/report/export?format=markdown\|pdf`（非法值 422） |
-| 前端 | `WritebackBar.tsx` 的「导出」改为下拉，二选一 |
+| 前端 | 工作台顶栏「导出报告」下拉，二选一（批次 12 从底部回写栏上移，见 18.2.8） |
 
 **为什么用 PyMuPDF 的 Story，而不是引排版库**：`pymupdf` 已是解析链路的依赖，
 其 `Story` + `DocumentWriter` 自带 HTML/CSS 排版引擎，可直接流式排到多页 A4。
@@ -1695,6 +1701,44 @@ POST /report/export?format=pdf  → record_id=33, 221,763 字节, 4 页
 下载回读                         → 页数=4，四大章节（基本信息/结论/明细/附录）齐全
 POST /report/export?format=docx → 422
 pytest                          → 125 passed, 1 skipped
+```
+
+#### 18.2.8 阶段二·批次 12（已交付：报告预览 Markdown 渲染 + 报告操作上移顶栏）
+
+**问题**：报告预览用 `<pre>` 原样贴 Markdown 源码，表格/标题/引用块全是符号，
+不像"报告"；而「预览报告」与「导出报告」沉在底部回写栏，与「下载原件」分居两处。
+
+**改动**（纯前端，无接口变更）
+
+| 项 | 实现位置 |
+|---|---|
+| Markdown 渲染 | 新增 `frontend/src/lib/reportMarkdown.tsx`：`renderReportMarkdown(md)` |
+| 预览弹窗 | 由 `WritebackBar.tsx` 上移到 `Workbench.tsx` 顶栏（`modal.info`，宽 820） |
+| 导出入口 | 同上，与「下载原件」「预览报告」并列成一条工具条 |
+| 样式 | `styles.css` 追加 `.report-markdown` 一族（标题分级 / 表格细边框 / 引用块竖线 / `<details>` 折叠） |
+
+**为什么自研渲染器，不引 `react-markdown` / `marked`**：`AGENTS.md` 禁止擅自引入
+第三方依赖，而这份 Markdown 是**本系统自己生成**的（`report_service.render_markdown`），
+语法集合固定且很窄——标题、管道表格、无序列表、引用块、`<details>`、加粗、行内代码。
+为这点语法装通用引擎不划算。
+
+**为什么不用 `dangerouslySetInnerHTML`**：报告正文含**合同原文与 LLM 产出**，
+直接把 HTML 注入 DOM 等于把 XSS 的口子交给数据源。渲染器解析成 **React 元素树**，
+文本一律经 React 转义，从根上避免注入。
+
+**为什么操作上移到顶栏**：报告相关操作（看原件 / 看报告 / 存报告）语义上是一组，
+底部回写栏只保留"写"的动作（批注 / 回写）；且导出后回写栏的按钮位置会随摘要
+文本长短上下浮动，移到固定高度的顶栏后位置稳定。
+
+**实测**
+
+```
+浏览器（#1365 服务合同）：
+  顶栏  [下载原件] [预览报告] [导出报告]  ← 三件并列
+  预览  .report-markdown 命中，h1=合同审查报告：…，表格 1、引用块 9、details 7
+        details 点击展开正常（依据链正文可见）
+  导出  下拉两项可用 → markdown 7786B / pdf 221764B 均落库（export_record 43/42）
+  tsc --noEmit / vite build exit 0
 ```
 
 ---
