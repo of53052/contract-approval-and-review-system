@@ -556,6 +556,67 @@ def test_list_export_records(client: TestClient, db) -> None:
     assert rows[0]["download_url"] == f"/api/contracts/{c.id}/report/download/{rows[0]['id']}"
 
 
+def test_export_report_pdf(client: TestClient, db) -> None:
+    """PDF 导出端到端：渲染 → 上传 MinIO → 下载回读。
+
+    覆盖"精排"链路的关键契约：产物是可解析的 PDF，且 PRD 2.4.8 的四大章节
+    都在正文里。**不走上传链路**——那样要等 WPS 转换 + 后台流水线跑完，
+    慢且依赖外部环境；直接构造"已完成审查"的合同即可覆盖导出这一段。
+    """
+    import pymupdf
+
+    from app.models import ReviewTask
+    from app.models.enums import ReviewConclusion
+
+    c = Contract(
+        title="PDF 导出用例", business_type="purchase",
+        file_format=FileFormat.PDF.value, file_object_key="x/original.pdf",
+        file_name="x.pdf", file_size=10, contract_no="PDF-2026-0001",
+        amount=100000, currency="CNY",
+        file_hash=hashlib.sha256(b"pdf-export-case").hexdigest(),
+        source=ContractSource.UPLOAD.value,
+    )
+    db.add(c)
+    db.flush()
+    db.add(ReviewTask(
+        contract_id=c.id, status=TaskStatus.COMPLETED.value,
+        overall_risk="low", conclusion=ReviewConclusion.PASS.value,
+        high_risk_count=0, medium_risk_count=0, low_risk_count=0,
+        total_pages=1, parsed_pages=1,
+    ))
+    db.commit()
+
+    r = client.post(f"/api/contracts/{c.id}/report/export", params={"format": "pdf"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["format"] == "pdf"
+    assert body["file_size"] > 0
+    assert body["object_key"].endswith(".pdf")
+
+    dl = client.get(body["download_url"])
+    assert dl.status_code == 200
+    assert dl.headers["content-type"].startswith("application/pdf")
+
+    doc = pymupdf.open(stream=dl.content, filetype="pdf")
+    try:
+        assert doc.page_count >= 1
+        text = "".join(doc[i].get_text() for i in range(doc.page_count))
+        for section in ("合同基本信息", "综合审查结论", "风险清单明细", "附录"):
+            assert section in text, f"缺少章节: {section}"
+        # PDF 文本层会在中英文之间插入 \xa0（不换行空格），比对前先归一化空白
+        assert c.title.replace(" ", "") in text.replace("\xa0", "").replace(" ", "")
+    finally:
+        doc.close()
+
+
+def test_export_report_rejects_unknown_format(client: TestClient) -> None:
+    """非法格式应被 422 拦下，而不是静默按 Markdown 导出。"""
+    r = client.post(
+        "/api/contracts/99999999/report/export", params={"format": "docx"}
+    )
+    assert r.status_code == 422
+
+
 def test_events_empty_for_contract_without_task(client: TestClient, db) -> None:
     c = Contract(
         title="无任务合同", business_type="purchase", file_format=FileFormat.PDF.value,

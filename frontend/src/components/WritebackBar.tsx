@@ -9,6 +9,7 @@ import {
   Alert,
   Button,
   Divider,
+  Dropdown,
   Flex,
   Input,
   Modal,
@@ -27,7 +28,7 @@ import {
   writebackStatus,
 } from "../api";
 import { apiError } from "../api/client";
-import type { ContractDetail } from "../types";
+import type { ContractDetail, ExportFormat } from "../types";
 import { CONCLUSION_META, RISK_META, WRITEBACK_META } from "../constants";
 
 interface Props {
@@ -110,10 +111,13 @@ export default function WritebackBar({ contract, selectedRiskId, onWrittenBack }
   });
 
   const exportMut = useMutation({
-    mutationFn: () => exportReport(contract.id),
+    mutationFn: (format: ExportFormat) => exportReport(contract.id, format),
     onSuccess: (r) => {
-      message.success(`报告已导出（${r.file_size} 字节）`);
+      message.success(
+        `已导出 ${r.format === "pdf" ? "PDF" : "Markdown"} 报告（${r.file_size} 字节）`,
+      );
       window.open(r.download_url, "_blank");
+      qc.invalidateQueries({ queryKey: ["report-exports", contract.id] });
     },
     onError: (e) => message.error(apiError(e)),
   });
@@ -195,14 +199,28 @@ export default function WritebackBar({ contract, selectedRiskId, onWrittenBack }
             <Button onClick={() => previewMut.mutate()} loading={previewMut.isPending}>
               预览报告
             </Button>
-            <Button
-              icon={<ExportOutlined />}
-              onClick={() => exportMut.mutate()}
-              loading={exportMut.isPending}
-              disabled={contract.status !== "completed"}
+            {/* 导出格式二选一：Markdown 便于留痕与机读，PDF 用于归档与发送 */}
+            <Dropdown
+              menu={{
+                items: [
+                  {
+                    key: "markdown",
+                    label: "Markdown（便于留痕 / 机读）",
+                    onClick: () => exportMut.mutate("markdown"),
+                  },
+                  {
+                    key: "pdf",
+                    label: "PDF（精排版，用于归档 / 发送）",
+                    onClick: () => exportMut.mutate("pdf"),
+                  },
+                ],
+              }}
+              disabled={contract.status !== "completed" || exportMut.isPending}
             >
-              导出
-            </Button>
+              <Button icon={<ExportOutlined />} loading={exportMut.isPending}>
+                导出
+              </Button>
+            </Dropdown>
           </Space>
         </Space>
       </Flex>

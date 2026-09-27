@@ -109,7 +109,7 @@ npm run dev
 6. 卡片上展开 **条款差异对比** 看原文 ↔ 建议逐字增删；点 **复制** 取走修改建议
 7. 在卡片上 **编辑建议** / **采纳**
 8. 底部填写法务批注 → **保存批注**
-9. 点 **预览报告** 看 Markdown 效果，点 **导出** 落存储并下载
+9. 点 **预览报告** 看 Markdown 效果，点 **导出** 选 Markdown 或 PDF（精排版），落存储并下载
 10. 点 **写回审批意见** → 写回 mock 审批系统评论区
 
 > 左栏正文里**虚线蓝框**是提取到的元数据字段（甲方 / 合同金额 / 合同编号…），
@@ -305,7 +305,8 @@ contract-approval-and-review-system/
 │   │   │   ├── review/        切分 / 规则引擎 / 规则写入校验 / LLM 审查 / 合并 / 闸门
 │   │   │   ├── llm/           LLMProvider 抽象（OpenAICompat / Mock）
 │   │   │   ├── approval/      审批系统适配层
-│   │   │   ├── report_service.py      报告生成与导出
+│   │   │   ├── report_service.py      报告生成（Markdown）与导出登记
+│   │   │   ├── report_pdf.py          报告 PDF 精排（PyMuPDF Story）
 │   │   │   └── writeback_service.py   回写审批系统
 │   │   └── workers/           状态机 + 审查流水线
 │   ├── tests/

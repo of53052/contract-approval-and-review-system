@@ -305,11 +305,14 @@ export interface ExportRecordItem {
   download_url: string;
 }
 
+/** 报告导出格式：markdown 便于留痕/机读，pdf 为精排版（归档与发送）。 */
+export type ExportFormat = "markdown" | "pdf";
+
 export interface ExportRecord {
   record_id: number;
   object_key: string;
   file_size: number;
-  format: string;
+  format: ExportFormat;
   download_url: string;
 }
 

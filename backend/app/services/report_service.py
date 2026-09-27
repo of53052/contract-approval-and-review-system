@@ -301,17 +301,28 @@ class ExportResult:
     format: str
 
 
-def export_markdown(
-    db: Session, bundle: ReportBundle, *, created_by: str | None = None
+#: 导出格式 → (扩展名, content_type)
+_EXPORT_FORMATS = {
+    "markdown": ("md", "text/markdown; charset=utf-8"),
+    "pdf": ("pdf", "application/pdf"),
+}
+
+
+def _store_report(
+    db: Session,
+    bundle: ReportBundle,
+    *,
+    fmt: str,
+    data: bytes,
+    created_by: str | None,
 ) -> ExportResult:
-    """生成 Markdown 报告并导出到 MinIO，登记 `export_record`。
+    """把报告产物上传 MinIO 并登记 `export_record`。
 
     **先上传成功再落库**：与转换后 PDF 同样的顺序，避免出现
     "库里有记录、MinIO 里没对象"的悬空引用。
     """
-    text = render_markdown(bundle)
-    data = text.encode("utf-8")
-    key = path_report(bundle.contract.id, datetime.now().strftime("%Y%m%d_%H%M%S"), "md")
+    ext, content_type = _EXPORT_FORMATS[fmt]
+    key = path_report(bundle.contract.id, datetime.now().strftime("%Y%m%d_%H%M%S"), ext)
 
     client = get_minio()
     client.put_object(
@@ -319,12 +330,12 @@ def export_markdown(
         key,
         BytesIO(data),
         length=len(data),
-        content_type="text/markdown; charset=utf-8",
+        content_type=content_type,
     )
 
     record = ExportRecord(
         contract_id=bundle.contract.id,
-        format="markdown",
+        format=fmt,
         file_object_key=key,
         file_size=len(data),
         created_by=created_by,
@@ -333,9 +344,43 @@ def export_markdown(
     db.flush()
 
     logger.info(
-        "报告已导出: contract=%s key=%s/%s（%s 字节）",
-        bundle.contract.id, settings.minio_bucket_reports, key, len(data),
+        "报告已导出: contract=%s format=%s key=%s/%s（%s 字节）",
+        bundle.contract.id, fmt, settings.minio_bucket_reports, key, len(data),
     )
     return ExportResult(
-        record_id=record.id, object_key=key, file_size=len(data), format="markdown"
+        record_id=record.id, object_key=key, file_size=len(data), format=fmt
     )
+
+
+def export_markdown(
+    db: Session, bundle: ReportBundle, *, created_by: str | None = None
+) -> ExportResult:
+    """生成 Markdown 报告并导出到 MinIO，登记 `export_record`。"""
+    data = render_markdown(bundle).encode("utf-8")
+    return _store_report(
+        db, bundle, fmt="markdown", data=data, created_by=created_by
+    )
+
+
+def export_pdf(
+    db: Session, bundle: ReportBundle, *, created_by: str | None = None
+) -> ExportResult:
+    """生成 PDF 报告并导出到 MinIO，登记 `export_record`。
+
+    PDF 渲染实现放在 `report_pdf` 模块，这里**延迟导入**：
+    PyMuPDF 的 Story 引擎初始化有固定开销，而"只导出 Markdown"的调用
+    不该为它付出代价。
+    """
+    from app.services.report_pdf import render_pdf
+
+    data = render_pdf(bundle)
+    return _store_report(db, bundle, fmt="pdf", data=data, created_by=created_by)
+
+
+def export_report(
+    db: Session, bundle: ReportBundle, *, fmt: str, created_by: str | None = None
+) -> ExportResult:
+    """按格式导出报告。`fmt` 取值见 `_EXPORT_FORMATS`。"""
+    if fmt == "pdf":
+        return export_pdf(db, bundle, created_by=created_by)
+    return export_markdown(db, bundle, created_by=created_by)

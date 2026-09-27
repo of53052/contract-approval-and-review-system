@@ -212,7 +212,7 @@ FastAPI 统一返回：
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/contracts/{id}/report/preview` | 报告 Markdown 预览（不落存储） |
-| POST | `/api/contracts/{id}/report/export` | 导出到 MinIO，登记 `export_record` |
+| POST | `/api/contracts/{id}/report/export` | 导出到 MinIO，登记 `export_record`；`format=markdown`（默认）/ `pdf` |
 | GET | `/api/contracts/{id}/report/download/{rid}` | 下载报告（后端代理 MinIO） |
 | GET | `/api/contracts/{id}/report/exports` | 导出历史 |
 
@@ -336,7 +336,7 @@ GET  /api/risks?contract_id=      → 6 项，锚点与依据齐全
 PATCH /api/risks/{id}             → adopted=true（维护 I4）
 POST /api/risks/annotations       → 批注创建
 GET  /report/preview              → 含法务编辑建议与"已采纳"标记
-POST /report/export               → 落 MinIO 并登记 export_record
+POST /report/export?format=pdf    → 精排 PDF，落 MinIO 并登记 export_record
 GET  /report/download/{rid}       → 下载报告
 POST /writeback                   → success，返回 comment_id
 GET  /writeback/status            → success

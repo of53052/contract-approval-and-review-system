@@ -1248,7 +1248,8 @@ contract-approval-and-review-system/
 │   │   │   │                      #   / merger / global_checker
 │   │   │   ├── llm/               # LLMProvider / OpenAICompat / Mock
 │   │   │   ├── approval/          # ApprovalSystemAdapter 抽象 + HTTP 实现
-│   │   │   ├── report_service.py  # 报告渲染与导出
+│   │   │   ├── report_service.py  # 报告渲染（Markdown）与导出登记
+│   │   │   ├── report_pdf.py      # 报告 PDF 精排（PyMuPDF Story）
 │   │   │   └── writeback_service.py  # 回写审批系统（幂等）
 │   │   └── workers/               # state_machine / pipeline
 │   ├── tests/                     # test_models / test_review_engine / test_api
@@ -1337,7 +1338,7 @@ gantt
 |---|---|
 | 后端：数据模型 + 状态机 + 解析 + 规则 + LLM + 报告（Markdown） | 扫描件 OCR 链路（**批次 8 已交付**，见 §18.2.4） |
 | 前端：大盘页 + 工作台 + 规则配置页 | — |
-| mock 审批服务（**批次 10 起 4 条待办**，见 §18.2.6） | PDF 报告精排 |
+| mock 审批服务（**批次 10 起 4 条待办**，见 §18.2.6） | PDF 报告精排（**批次 11 已交付**，见 §18.2.7） |
 | 1 个示例合同端到端（设备采购，DOCX） | 其余示例合同（销售/服务/劳动）（**批次 9 / 10 已交付**，见 §18.2.5 / §18.2.6） |
 | 回归断言集（**批次 10 起 5 份合同**，见 §18.2.6） | 批量审查（**仍未做**） |
 | blocked 重试（工作台内，`POST /api/tasks/{id}/retry`） | 用户角色与权限 |
@@ -1350,7 +1351,7 @@ gantt
 
 - ~~其余示例合同（销售 / 劳动）+ 完整断言集~~ → **批次 9 已交付**（见 §18.2.5）
 - ~~`service` 服务合同模板的规则与样本~~ → **批次 10 已交付**（见 §18.2.6）
-- PDF 报告精排
+- ~~PDF 报告精排~~ → **批次 11 已交付**（见 §18.2.7）
 - 批量审查（届时评估迁 Celery）
 
 > ⚠️ **`blocked 重试 UI` 已不在本清单**：原计划推阶段二，实际随工作台一并交付
@@ -1366,6 +1367,8 @@ gantt
 > ⚠️ **`其余示例合同（销售 / 劳动）+ 完整断言集` 已不在本清单**：随批次 9 交付（见 §18.2.5）。
 >
 > ⚠️ **`service` 服务合同模板的规则与样本**：随批次 10 交付（见 §18.2.6）。
+>
+> ⚠️ **`PDF 报告精排`**：随批次 11 交付（见 §18.2.7）。
 
 #### 18.2.1 阶段二·批次 5（已交付：PRD 补齐）
 
@@ -1653,6 +1656,46 @@ service   high / reject  高=5 中=2  — 7 项（含「知识产权全部转让
 （`seed_rules` 会清理 stale 规则）。服务规则是**独立定义**而非复用采购对象：
 两者的关键词与结论模板需按服务语境调整（如知识产权建议条款要写明"服务成果与交付物"），
 复挂会让服务合同的结论读起来像采购合同。
+
+#### 18.2.7 阶段二·批次 11（已交付：PDF 报告精排）
+
+阶段一只有 Markdown 报告（`format` 字段本就留了 `pdf` 的位置）。本批次补上 PDF 精排，
+**两种格式并存**：Markdown 便于机读/差异比对，PDF 用于正式归档与发送。
+
+| 项 | 实现位置 |
+|---|---|
+| PDF 渲染 | `backend/app/services/report_pdf.py`：`render_html`（数据 → HTML）+ `render_pdf`（HTML → 多页 A4） |
+| 导出分发 | `report_service.export_report(fmt=...)`，Markdown 与 PDF 共用 `_store_report` 上传/登记 |
+| 接口 | `POST /api/contracts/{id}/report/export?format=markdown\|pdf`（非法值 422） |
+| 前端 | `WritebackBar.tsx` 的「导出」改为下拉，二选一 |
+
+**为什么用 PyMuPDF 的 Story，而不是引排版库**：`pymupdf` 已是解析链路的依赖，
+其 `Story` + `DocumentWriter` 自带 HTML/CSS 排版引擎，可直接流式排到多页 A4。
+reportlab / weasyprint / pandoc 都要**新增第三方依赖**，而 AGENTS.md 明令禁止，
+Story 足以覆盖当前需求。**中文字体**走 `@font-face` 指向系统字体绝对路径，
+不把字体文件放进仓库；导出前用 `subset_fonts()` 子集化
+（实测：msyh.ttc 整份内嵌 19.6MB → 子集化后 45KB，一份报告从 19MB 降到 220KB）。
+
+**踩到的三个 Story 引擎限制**（都靠最小复现定位，非猜测）：
+
+| 限制 | 表现 | 规避 |
+|---|---|---|
+| 不支持百分比列宽 | `width: 22%` 的标签列被压到最小宽度，中文逐字竖排 | 列宽写 `pt`（`92pt`） |
+| 不支持 inline 盒模型 | `display:inline-block` / `padding` / `border` 在 `<span>` 上无效，标签各占一行 | 标签用纯文本 + 全角空格分隔 |
+| **带 `background` 的块跨页会重画碎片** | 风险卡片在续页顶部留下一排色块（实测 3 页报告 p2/p3 有 5/12 个残块） | 卡片改用"左侧竖线 + 描边 + 彩色标题"，不设背景 |
+
+> ⚠️ 另外 Story **不支持任何 keep-together 属性**（`page-break-inside: avoid` /
+> `break-inside: avoid` / `white-space: nowrap` 实测全无效），因此"附录"用
+> `page-break-before: always` 独立起页，而非试图让它在空间不足时整体下移。
+
+**实测**
+
+```
+POST /report/export?format=pdf  → record_id=33, 221,763 字节, 4 页
+下载回读                         → 页数=4，四大章节（基本信息/结论/明细/附录）齐全
+POST /report/export?format=docx → 422
+pytest                          → 125 passed, 1 skipped
+```
 
 ---
 

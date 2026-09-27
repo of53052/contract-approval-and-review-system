@@ -9,6 +9,7 @@ import type {
   ContractListItem,
   ContractMetadataItem,
   Page,
+  ExportFormat,
   ExportRecord,
   ExportRecordItem,
   ReportPreview,
@@ -96,8 +97,13 @@ export const syncTodos = async (): Promise<unknown[]> =>
 export const previewReport = async (contractId: number): Promise<ReportPreview> =>
   (await api.get(`/api/contracts/${contractId}/report/preview`)).data;
 
-export const exportReport = async (contractId: number): Promise<ExportRecord> =>
-  (await api.post(`/api/contracts/${contractId}/report/export`)).data;
+export const exportReport = async (
+  contractId: number,
+  format: ExportFormat = "markdown",
+): Promise<ExportRecord> =>
+  (await api.post(`/api/contracts/${contractId}/report/export`, null, {
+    params: { format },
+  })).data;
 
 export const writeback = async (
   contractId: number,

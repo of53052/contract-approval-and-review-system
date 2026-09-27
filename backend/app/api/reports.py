@@ -14,7 +14,11 @@ from app.core.config import settings
 from app.core.minio_client import get_minio
 from app.models import Contract, ExportRecord
 from app.schemas import ExportOut, ReportPreviewOut
-from app.services.report_service import export_markdown, load_bundle, render_markdown
+from app.services.report_service import (
+    export_report as export_report_file,
+    load_bundle,
+    render_markdown,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,19 +41,35 @@ def preview_report(contract_id: int, db: Session = Depends(get_db)) -> ReportPre
 def export_report(
     contract_id: int,
     db: Session = Depends(get_db),
+    format: str = Query(
+        default="markdown",
+        description="导出格式：markdown（便于留痕/机读）或 pdf（精排，用于归档与发送）",
+    ),
     created_by: str = Query(default="法务", description="导出人"),
 ) -> ExportOut:
-    """生成报告并导出到 MinIO，登记 `export_record`。"""
+    """生成报告并导出到 MinIO，登记 `export_record`。
+
+    **两种格式并存**：Markdown 便于机读与差异比对，PDF 用于正式归档与发送。
+    它们各自独立渲染（见 `report_service` / `report_pdf` 的说明），
+    同一份数据导出两种格式，内容口径一致。
+    """
+    # 参数校验先于资源查询：非法格式是"请求本身不合法"，与合同是否存在无关，
+    # 应先返回 422（否则合同不存在时会先撞上 404，错误信息误导调用方）。
+    if format not in ("markdown", "pdf"):
+        raise HTTPException(
+            status_code=422, detail=f"不支持的导出格式: {format}（可选 markdown / pdf）"
+        )
+
     bundle = load_bundle(db, contract_id)
     if bundle is None:
         raise HTTPException(status_code=404, detail=f"合同或任务不存在: {contract_id}")
 
     try:
-        result = export_markdown(db, bundle, created_by=created_by)
-    except Exception as exc:  # noqa: BLE001 - 对象存储故障转 502
+        result = export_report_file(db, bundle, fmt=format, created_by=created_by)
+    except Exception as exc:  # noqa: BLE001 - 对象存储/渲染故障转 502
         db.rollback()
-        logger.error("报告导出失败: %s", exc)
-        raise HTTPException(status_code=502, detail=f"对象存储不可用: {exc}") from exc
+        logger.error("报告导出失败（format=%s）: %s", format, exc)
+        raise HTTPException(status_code=502, detail=f"报告导出失败: {exc}") from exc
 
     db.commit()
     return ExportOut(
