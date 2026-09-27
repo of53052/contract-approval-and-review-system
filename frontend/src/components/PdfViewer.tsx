@@ -239,6 +239,11 @@ function PdfPage({
     const viewport = page.getViewport({ scale });
 
     page.getTextContent().then((content) => {
+      // `styles` 是 fontName → 字体族的映射。用 PDF 自己的字体族而非
+      // 通用 sans-serif：字体度量越接近，文本层与 canvas 的对齐越好
+      // （文字已设为 transparent，此处只为让命中框与文字形状吻合）。
+      const styles = (content as { styles?: Record<string, { fontFamily?: string }> })
+        .styles;
       for (const item of content.items) {
         if (!("str" in item) || !item.str) continue;
         // 与官方文本层算法一致；实现抽到 lib/anchorCoords 供回归校验复用
@@ -249,7 +254,8 @@ function PdfPage({
         span.style.left = `${box.left}px`;
         span.style.top = `${box.top}px`;
         span.style.fontSize = `${box.height}px`;
-        span.style.fontFamily = "sans-serif";
+        span.style.fontFamily =
+          styles?.[item.fontName]?.fontFamily || "sans-serif";
         span.dataset.x = String(box.left);
         span.dataset.y = String(box.top);
         span.dataset.w = String(box.width);

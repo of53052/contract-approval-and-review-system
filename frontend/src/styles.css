@@ -5,13 +5,23 @@ body {
   font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 
-/* PDF 文本层：透明可选中，供高亮与反向定位使用 */
+/* PDF 文本层：透明可选中，供高亮与反向定位使用
+ *
+ * ⚠️ 文字必须是 transparent 的。文本层浮在 canvas 之上，
+ * 若沿用默认黑色，就会与 canvas 上已经画好的文字叠成"重影"——
+ * 而且文本层字体与 PDF 内嵌字体度量不同，两层错位后尤其明显。
+ * 设为 transparent 后文字仍可被选中与命中点击，只是不参与视觉呈现。
+ */
 .pdf-text-layer {
   position: absolute;
   inset: 0;
   overflow: hidden;
   line-height: 1;
-  opacity: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  z-index: 2;
+  /* 文本层整体不拦截事件，由子 span 与高亮框各自接管 */
+  pointer-events: none;
 }
 
 .pdf-text-layer > span {
@@ -19,14 +29,25 @@ body {
   white-space: pre;
   transform-origin: 0 0;
   cursor: pointer;
+  color: transparent;
+  /* 让命中区域尽量贴合文字，减少相邻行误触 */
+  pointer-events: auto;
+}
+
+/* 选中时给可见反馈，否则用户看不到自己选了什么 */
+.pdf-text-layer ::selection {
+  background: rgba(22, 119, 255, 0.3);
 }
 
 /* 风险高亮：半透明底 + 描边，保证正文仍可读 */
+/* 层叠顺序：canvas(底层) < 文本层(z-index:2) < 高亮框(z-index:3)
+ * 高亮框在最上层，保证半透明底色能盖住正文、且点击优先命中它 */
 .pdf-highlight {
   position: absolute;
   pointer-events: none;
   border-radius: 2px;
   transition: background-color 0.2s;
+  z-index: 3;
 }
 
 .pdf-highlight.level-high {
