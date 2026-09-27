@@ -166,6 +166,119 @@ export interface ReportPreview {
   char_count: number;
 }
 
+// ==================== 规则配置（PRD 2.4.3 / 2.4.5）====================
+
+export type RuleType = "keyword" | "regex" | "threshold" | "presence" | "blacklist";
+export type RuleOperator =
+  | "contains" | "not_contains" | "regex"
+  | "gt" | "gte" | "lt" | "lte" | "eq"
+  | "exists" | "not_exists";
+
+/** 规则配置页的下拉选项（由后端下发，避免枚举漂移）。 */
+export interface RuleOption {
+  value: string;
+  label: string;
+}
+
+export interface RuleOptions {
+  rule_type: RuleOption[];
+  operator: RuleOption[];
+  value_type: RuleOption[];
+  category: RuleOption[];
+  risk_level: RuleOption[];
+  clause_type: RuleOption[];
+  metadata_key: RuleOption[];
+  metric: RuleOption[];
+}
+
+export interface RuleCondition {
+  id: number;
+  seq: number;
+  field: string;
+  operator: RuleOperator;
+  value: string | null;
+  value_type: string;
+}
+
+/** 写入时的条件：不含 id / seq（seq 由后端按列表下标生成）。 */
+export interface RuleConditionIn {
+  field: string;
+  operator: RuleOperator;
+  value?: string | null;
+  value_type?: string;
+}
+
+export interface Rule {
+  id: number;
+  template_id: number;
+  code: string;
+  name: string;
+  category: string;
+  risk_level: RiskLevel;
+  rule_type: RuleType;
+  config: Record<string, unknown> | null;
+  result_template: string | null;
+  suggestion_template: string | null;
+  enabled: boolean;
+  seq: number;
+  conditions: RuleCondition[];
+}
+
+export interface RuleTemplate {
+  id: number;
+  contract_type: string;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  rules: Rule[];
+}
+
+export interface RuleIn {
+  template_id: number;
+  code: string;
+  name: string;
+  category: string;
+  risk_level: string;
+  rule_type: string;
+  config?: Record<string, unknown> | null;
+  result_template?: string | null;
+  suggestion_template?: string | null;
+  enabled?: boolean;
+  seq?: number;
+  conditions?: RuleConditionIn[];
+}
+
+export type RuleUpdateIn = Partial<Omit<RuleIn, "template_id">>;
+
+export interface StandardClause {
+  id: number;
+  clause_type: string;
+  contract_type: string | null;
+  title: string;
+  content: string;
+  source: string | null;
+  enabled: boolean;
+}
+
+export interface StandardClauseIn {
+  clause_type: string;
+  contract_type?: string | null;
+  title: string;
+  content: string;
+  source?: string | null;
+  enabled?: boolean;
+}
+
+export type StandardClauseUpdateIn = Partial<StandardClauseIn>;
+
+export interface BlacklistItem {
+  id: number;
+  subject_name: string;
+  credit_code: string | null;
+  status: string;
+  detail: string | null;
+}
+
 /** 批量操作中单条的结果。 */
 export interface BatchItemResult {
   id: number;

@@ -21,9 +21,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from sqlalchemy import select
+
 from app.core.database import SessionLocal
 from app.main import app
-from app.models import Contract, ReviewTask, RiskItem
+from app.models import Contract, ReviewTask, RiskItem, Rule, RuleTemplate
 from app.models.enums import (
     ContractSource,
     FileFormat,
@@ -167,6 +169,206 @@ def test_rules_readonly_endpoints(client: TestClient, path: str) -> None:
     r = client.get(path)
     assert r.status_code == 200
     assert isinstance(r.json(), list)
+
+
+# ==================== 规则配置（批次 7：写入路径）====================
+
+def test_rule_options_expose_all_enums(client: TestClient) -> None:
+    """选项接口必须覆盖前端要用的全部枚举，否则用户选不到值。"""
+    r = client.get("/api/rules/options")
+    assert r.status_code == 200
+    body = r.json()
+    for key in ("rule_type", "operator", "value_type", "category",
+                "risk_level", "clause_type", "metadata_key", "metric"):
+        assert body[key], f"{key} 选项为空"
+    assert {o["value"] for o in body["risk_level"]} == {"high", "medium", "low"}
+
+
+def test_create_rule_rejects_invalid_config(client: TestClient, db) -> None:
+    """配错的规则必须 400，而不是落库后静默失效。"""
+    tpl = db.execute(select(RuleTemplate).limit(1)).scalar_one_or_none()
+    if tpl is None:
+        pytest.skip("规则模板未初始化（需先跑 scripts/seed_data.py）")
+
+    r = client.post("/api/rules/rules", json={
+        "template_id": tpl.id, "code": "BAD_METRIC_RULE", "name": "坏规则",
+        "category": "liability", "risk_level": "high", "rule_type": "threshold",
+        "config": {"metric": "not_a_metric", "threshold": 0.2},
+        "conditions": [],
+    })
+    assert r.status_code == 400
+    assert "metric" in r.json()["detail"]
+
+    # 落库失败：库里不应留下这条规则
+    assert db.execute(
+        select(Rule).where(Rule.code == "BAD_METRIC_RULE")
+    ).scalar_one_or_none() is None
+
+
+def test_rule_crud_roundtrip(client: TestClient, db) -> None:
+    """新建 → 读取 → 更新 → 停用 → 删除 的完整闭环。"""
+    tpl = db.execute(select(RuleTemplate).limit(1)).scalar_one_or_none()
+    if tpl is None:
+        pytest.skip("规则模板未初始化")
+
+    payload = {
+        "template_id": tpl.id, "code": "TEST_ROUNDTRIP", "name": "闭环用例规则",
+        "category": "confidentiality", "risk_level": "medium", "rule_type": "keyword",
+        "config": {"keywords": ["测试关键词"], "match_all": False},
+        "result_template": "命中：{clause_no}", "suggestion_template": "建议修改",
+        "enabled": True, "seq": 99,
+        "conditions": [{"field": "clause.content", "operator": "contains",
+                        "value": "测试关键词", "value_type": "string"}],
+    }
+    r = client.post("/api/rules/rules", json=payload)
+    assert r.status_code == 201, r.text
+    rule_id = r.json()["id"]
+    assert r.json()["conditions"][0]["seq"] == 0, "条件 seq 应由后端按下标生成"
+
+    # 更新：只改名称，其余字段保持
+    r = client.patch(f"/api/rules/rules/{rule_id}", json={"name": "改名后"})
+    assert r.status_code == 200
+    assert r.json()["name"] == "改名后"
+    assert r.json()["code"] == "TEST_ROUNDTRIP", "未提供的字段不应被清空"
+    assert len(r.json()["conditions"]) == 1
+
+    # 整体替换条件
+    r = client.patch(f"/api/rules/rules/{rule_id}", json={
+        "conditions": [
+            {"field": "clause.content", "operator": "contains", "value": "A"},
+            {"field": "metadata.amount", "operator": "exists"},
+        ],
+    })
+    assert r.status_code == 200
+    assert [c["seq"] for c in r.json()["conditions"]] == [0, 1]
+
+    # 停用
+    r = client.patch(f"/api/rules/rules/{rule_id}", json={"enabled": False})
+    assert r.json()["enabled"] is False
+
+    assert client.delete(f"/api/rules/rules/{rule_id}").status_code == 200
+    assert client.get(f"/api/rules/rules/{rule_id}").status_code == 404
+
+
+def test_duplicate_rule_code_rejected(client: TestClient, db) -> None:
+    """同一模板内编码唯一。"""
+    tpl = db.execute(select(RuleTemplate).limit(1)).scalar_one_or_none()
+    existing = db.execute(
+        select(Rule).where(Rule.template_id == (tpl.id if tpl else 0)).limit(1)
+    ).scalar_one_or_none()
+    if existing is None:
+        pytest.skip("规则库未初始化")
+
+    r = client.post("/api/rules/rules", json={
+        "template_id": existing.template_id, "code": existing.code,
+        "name": "重复编码", "category": "liability", "risk_level": "high",
+        "rule_type": "keyword", "config": {"keywords": ["x"]}, "conditions": [],
+    })
+    assert r.status_code == 409
+    assert "已存在" in r.json()["detail"]
+
+
+def test_delete_rule_refused_when_referenced(client: TestClient, db) -> None:
+    """被历史风险依据引用的规则不得静默删除（依据链会失去来源）。
+
+    **用例自建数据**：不依赖库里恰好存在历史风险项——
+    测试夹具每条用例后都会清空业务表，跨用例依赖必然变得 flaky。
+    """
+    from app.models import RiskEvidence, RiskItem
+
+    tpl = db.execute(select(RuleTemplate).limit(1)).scalar_one_or_none()
+    if tpl is None:
+        pytest.skip("规则模板未初始化")
+
+    r = client.post("/api/rules/rules", json={
+        "template_id": tpl.id, "code": "TEST_REFERENCED", "name": "被引用规则",
+        "category": "liability", "risk_level": "high", "rule_type": "keyword",
+        "config": {"keywords": ["引用"]}, "conditions": [],
+    })
+    assert r.status_code == 201
+    rule_id = r.json()["id"]
+
+    c = Contract(
+        title="依据引用用例", business_type="purchase", file_format=FileFormat.PDF.value,
+        file_object_key="x/original.pdf", file_name="x.pdf", file_size=10,
+        file_hash=hashlib.sha256(b"rule-ref").hexdigest(),
+        source=ContractSource.UPLOAD.value,
+    )
+    db.add(c)
+    db.flush()
+    ri = RiskItem(
+        contract_id=c.id, title="测试风险", risk_level="high", category="other",
+        reason="r", is_global=1, unanchored=1, seq=0, merged_by="rule",
+    )
+    db.add(ri)
+    db.flush()
+    db.add(RiskEvidence(
+        risk_item_id=ri.id, evidence_type="rule", rule_id=rule_id, detail="依据",
+    ))
+    db.commit()
+
+    r = client.delete(f"/api/rules/rules/{rule_id}")
+    assert r.status_code == 409
+    assert "历史风险依据" in r.json()["detail"]
+
+    # force 才允许删除
+    assert client.delete(f"/api/rules/rules/{rule_id}", params={"force": True}).status_code == 200
+
+
+def test_template_toggle_affects_rule_loading(db) -> None:
+    """模板停用后，Pipeline 不应再加载该类型的规则。"""
+    from app.workers.pipeline import Pipeline
+
+    tpl = db.execute(
+        select(RuleTemplate).where(RuleTemplate.contract_type == "purchase")
+    ).scalar_one_or_none()
+    if tpl is None:
+        pytest.skip("采购模板未初始化")
+
+    original = tpl.enabled
+    try:
+        tpl.enabled = 0
+        db.commit()
+        # _load_rules 只依赖 self.db 与 business_type，构造轻量实例即可
+        p = Pipeline.__new__(Pipeline)
+        p.db = db
+        assert p._load_rules("purchase") == [], "模板停用后不应加载任何规则"
+    finally:
+        tpl.enabled = original
+        db.commit()
+
+
+def test_standard_clause_crud(client: TestClient, db) -> None:
+    """示范条款：新建 / 更新 / 删除，且来源字段影响防幻觉白名单。"""
+    from app.models import StandardClause
+
+    payload = {
+        "clause_type": "liability", "contract_type": None,
+        "title": "批次7测试示范条款", "content": "任一方赔偿总额不超过合同总金额。",
+        "source": "《民法典》第五百八十五条", "enabled": True,
+    }
+    r = client.post("/api/rules/standard-clauses", json=payload)
+    assert r.status_code == 201, r.text
+    cid = r.json()["id"]
+
+    # 同类型同标题判重
+    assert client.post("/api/rules/standard-clauses", json=payload).status_code == 409
+
+    # 正文为空应 400
+    r = client.patch(f"/api/rules/standard-clauses/{cid}", json={"content": "  "})
+    assert r.status_code == 400
+
+    r = client.patch(f"/api/rules/standard-clauses/{cid}",
+                     json={"title": "改后的标题", "enabled": False})
+    assert r.status_code == 200
+    assert r.json()["title"] == "改后的标题"
+    assert r.json()["enabled"] is False
+    assert r.json()["source"] == "《民法典》第五百八十五条", "未提供的字段不应被清空"
+
+    assert client.delete(f"/api/rules/standard-clauses/{cid}").status_code == 200
+    assert db.execute(
+        select(StandardClause).where(StandardClause.id == cid)
+    ).scalar_one_or_none() is None
 
 
 # ==================== 风险与批注 ====================

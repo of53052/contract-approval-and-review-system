@@ -25,10 +25,17 @@ from app.schemas.risks import (
 )
 from app.schemas.rules import (
     BlacklistOut,
+    RuleConditionIn,
     RuleConditionOut,
+    RuleIn,
+    RuleOptionsOut,
     RuleOut,
     RuleTemplateOut,
+    RuleTemplateUpdateIn,
+    RuleUpdateIn,
+    StandardClauseIn,
     StandardClauseOut,
+    StandardClauseUpdateIn,
 )
 from app.schemas.tasks import (
     ExportOut,
@@ -48,6 +55,8 @@ __all__ = [
     "AnchorOut", "AnnotationIn", "AnnotationOut", "EvidenceOut", "RiskItemOut",
     "RiskUpdateIn",
     "BlacklistOut", "RuleConditionOut", "RuleOut", "RuleTemplateOut", "StandardClauseOut",
+    "RuleConditionIn", "RuleIn", "RuleUpdateIn", "RuleTemplateUpdateIn",
+    "StandardClauseIn", "StandardClauseUpdateIn", "RuleOptionsOut",
     "ExportOut", "ReportPreviewOut", "TaskOut", "TaskProgressOut", "UploadResultOut",
     "WritebackIn", "WritebackOut", "WritebackStatusOut",
 ]

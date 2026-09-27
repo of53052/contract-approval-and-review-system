@@ -22,7 +22,7 @@ FastAPI 统一返回：
 |---|---|---|
 | 400 | 请求非法 | 文件为空、格式不支持、业务类型非法 |
 | 404 | 资源不存在 | 合同 / 任务 / 风险项 / 导出记录不存在 |
-| 409 | 状态冲突 | 非 blocked 任务调重试；DOCX 尚无渲染用 PDF |
+| 409 | 状态冲突 | 非 blocked 任务调重试；DOCX 尚无渲染用 PDF；规则编码重复；删除被历史依据引用的规则 |
 | 413 | 文件过大 | 上传超过 20MB |
 | 422 | 参数校验失败 | 缺少必填查询参数、`ids` 为空或超过 200 条（FastAPI 自动） |
 | 502 | 下游不可用 | MinIO 读取失败、审批系统不可达 |
@@ -151,15 +151,50 @@ FastAPI 统一返回：
 {"suggestion_edited": ""}
 ```
 
-### 2.5 规则库 `rules`（阶段一只读）
+### 2.5 规则库 `rules`（批次 7 起可维护）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| GET | `/api/rules/options` | 规则配置页下拉选项（枚举 + 中文标签，由后端下发） |
 | GET | `/api/rules/templates` | 规则模板列表 |
+| PATCH | `/api/rules/templates/{id}` | 更新模板（名称 / 描述 / 启用） |
 | GET | `/api/rules/rules` | 规则列表 |
 | GET | `/api/rules/rules/{id}` | 规则详情 |
+| POST | `/api/rules/rules` | 新建规则（**写入前校验**，非法配置 400） |
+| PATCH | `/api/rules/rules/{id}` | 更新规则（未提供的字段不改；`conditions` 提供则整体替换） |
+| DELETE | `/api/rules/rules/{id}` | 删除规则（被历史依据引用时 409，需 `force=true`） |
 | GET | `/api/rules/standard-clauses` | 示范条款库 |
+| POST | `/api/rules/standard-clauses` | 新建示范条款 |
+| PATCH | `/api/rules/standard-clauses/{id}` | 更新示范条款 |
+| DELETE | `/api/rules/standard-clauses/{id}` | 删除示范条款 |
 | GET | `/api/rules/blacklist` | 主体黑名单（⚠️ mock 数据，非真实工商信息） |
+
+#### 2.5.1 为什么写入路径必须校验
+
+规则引擎遇到配错的规则会 `logger.error` 后 `continue`——这是**正确的运行时行为**
+（单条坏规则不该中断整轮审查），但后果是**配错的规则永久静默失效**：
+用户在配置页看到"已启用"，审查却从不命中，没有任何提示。
+
+因此 `POST/PATCH` 会先过 `services/review/rule_config.validate_rule`，
+把"引擎会忽略"的配置在保存时变成 400：
+
+| 校验点 | 为什么 |
+|---|---|
+| 条件字段前缀必须是 `clause.` / `metadata.` | 引擎按前缀分派，写别的等于没写 |
+| `clause.` 后只能是 `content` / `clause_type` / `clause_no` / `title` | 引擎只读这四个键。`clause.payment.content` 这类直觉写法**会被静默忽略**——限定条款类型要用 `config.within_clause_type` + `required_pattern` |
+| `metadata.` 后必须是已知元数据键 | 同上 |
+| `exists` / `not_exists` 不接受 `value` | 存在性判断只看字段有无 |
+| 正则必须能编译 | 引擎运行期会吞掉非法正则，保存时不拦就是永久不生效 |
+| 各规则类型的必填参数 | 如 threshold 必须有 `metric` + `threshold` |
+
+**`/options` 为什么由后端下发**：枚举值前后端漂移时用户能选到后端不认的值，
+保存后规则静默失效（与列表页 `risk_level` 参数名漂移同类问题）。集中下发杜绝。
+
+#### 2.5.2 为什么规则不做物理删除
+
+`risk_evidence.rule_id` 是 `ON DELETE SET NULL`。硬删规则会让历史审查结果的
+"依据链"失去来源——报告里那条依据就说不清是哪条规则判的。
+因此被引用时返回 409 并建议改用 `enabled=false`，只有显式 `force=true` 才强删。
 
 ### 2.6 报告 `reports`
 

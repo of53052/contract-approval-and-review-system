@@ -557,6 +557,14 @@ class Pipeline:
         if tpl is None:
             logger.warning("未找到业务类型 %s 的规则模板，将只跑 LLM 引擎", business_type)
             return []
+        # 模板停用 ⟹ 该合同类型的确定性规则整体不生效（配置页的模板开关）。
+        # 不检查的话，用户在配置页关掉模板却毫无效果——与"规则静默失效"同类。
+        if not tpl.enabled:
+            logger.warning(
+                "规则模板 %s（%s）已停用，将只跑 LLM 引擎", tpl.id, business_type
+            )
+            return []
+        # 规则级的启停在 RuleEngine.run 里过滤（它才是权威判断点），此处不重复
         rules = list(self.db.execute(
             select(Rule).where(Rule.template_id == tpl.id)
         ).scalars())

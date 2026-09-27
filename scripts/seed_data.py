@@ -122,10 +122,12 @@ RULES: list[dict] = [
         },
         "result_template": "付款条款未以验收为前置条件，存在先付款后验收风险。",
         "suggestion_template": "建议约定：甲方验收合格并出具验收单后，方支付相应款项。",
-        # 条件表达式描述"付款条款内必须提到验收"，与 config 保持一致
-        "conditions": [
-            _c("clause.payment.content", RuleOperator.NOT_CONTAINS, "验收"),
-        ],
+        # ⚠️ 这里**故意不写 conditions**：规则引擎从不读 `clause.payment.content`
+        # 这类字段（`clause.` 后面只能是 content / clause_type / clause_no / title），
+        # 写了也是死配置——引擎静默忽略，看起来配了实则毫无作用。
+        # "付款条款内必须提到验收"的语义由 config.within_clause_type +
+        # config.required_pattern 表达（见 rule_engine._apply_presence）。
+        "conditions": [],
     },
     {
         "code": "IP_TRANSFER_ALL",

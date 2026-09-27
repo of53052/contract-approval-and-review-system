@@ -3,6 +3,7 @@ import { api } from "./client";
 import type {
   Annotation,
   BatchResult,
+  BlacklistItem,
   Clause,
   ContractDetail,
   ContractListItem,
@@ -12,6 +13,14 @@ import type {
   ExportRecordItem,
   ReportPreview,
   RiskItem,
+  Rule,
+  RuleIn,
+  RuleOptions,
+  RuleTemplate,
+  RuleUpdateIn,
+  StandardClause,
+  StandardClauseIn,
+  StandardClauseUpdateIn,
   TaskEvent,
   TaskProgress,
   WritebackResult,
@@ -100,6 +109,49 @@ export const writebackStatus = async (
   contractId: number,
 ): Promise<WritebackStatusOut> =>
   (await api.get(`/api/contracts/${contractId}/writeback/status`)).data;
+
+// ==================== 规则配置（PRD 2.4.3 / 2.4.5）====================
+
+export const listRuleOptions = async (): Promise<RuleOptions> =>
+  (await api.get("/api/rules/options")).data;
+
+export const listRuleTemplates = async (): Promise<RuleTemplate[]> =>
+  (await api.get("/api/rules/templates")).data;
+
+export const updateRuleTemplate = async (
+  templateId: number,
+  body: { name?: string; description?: string; enabled?: boolean },
+): Promise<RuleTemplate> =>
+  (await api.patch(`/api/rules/templates/${templateId}`, body)).data;
+
+export const createRule = async (body: RuleIn): Promise<Rule> =>
+  (await api.post("/api/rules/rules", body)).data;
+
+export const updateRule = async (ruleId: number, body: RuleUpdateIn): Promise<Rule> =>
+  (await api.patch(`/api/rules/rules/${ruleId}`, body)).data;
+
+/** 删除规则。被历史依据引用时后端返回 409，需 `force` 才强删。 */
+export const deleteRule = async (ruleId: number, force = false): Promise<unknown> =>
+  (await api.delete(`/api/rules/rules/${ruleId}`, { params: { force } })).data;
+
+export const listStandardClauses = async (): Promise<StandardClause[]> =>
+  (await api.get("/api/rules/standard-clauses")).data;
+
+export const createStandardClause = async (
+  body: StandardClauseIn,
+): Promise<StandardClause> => (await api.post("/api/rules/standard-clauses", body)).data;
+
+export const updateStandardClause = async (
+  clauseId: number,
+  body: StandardClauseUpdateIn,
+): Promise<StandardClause> =>
+  (await api.patch(`/api/rules/standard-clauses/${clauseId}`, body)).data;
+
+export const deleteStandardClause = async (clauseId: number): Promise<unknown> =>
+  (await api.delete(`/api/rules/standard-clauses/${clauseId}`)).data;
+
+export const listBlacklist = async (): Promise<BlacklistItem[]> =>
+  (await api.get("/api/rules/blacklist")).data;
 
 /** 合同 PDF 的直链（供 PDF.js 与 <a download> 使用）。 */
 export const pdfUrl = (contractId: number) => `/api/contracts/${contractId}/pdf`;
