@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """一键启动：基础设施 → 数据初始化 → mock 审批 → 后端 → 前端。
 
-设计依据：docs/architecture.md §4（部署架构）。README §2 的分步命令被本脚本收敛成一条。
+设计依据：docs/architecture.md §4（部署架构）。README §6.2 的分步命令被本脚本收敛成一条。
 
 用法（在项目根目录）：
     python scripts/start_all.py            # 全量启动
@@ -296,7 +296,7 @@ def print_banner() -> None:
     print(f"  接口文档      http://127.0.0.1:8000/docs")
     print(f"  mock 审批     http://127.0.0.1:8010/docs")
     print(f"  MinIO 控制台  http://127.0.0.1:19001")
-    print(f"\n  {C.DIM}演示步骤见 README §3；停止服务执行 python scripts/stop_all.py{C.END}\n")
+    print(f"\n  {C.DIM}演示步骤见 README §7；停止服务执行 python scripts/stop_all.py{C.END}\n")
 
 
 def main() -> int:
