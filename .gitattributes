@@ -1,0 +1,16 @@
+# 统一换行符处理
+* text=auto eol=lf
+
+# 二进制文件不处理
+*.docx binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.xlsx binary
+*.ttf binary
+*.ttc binary
+
+# Windows 脚本保留 CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
