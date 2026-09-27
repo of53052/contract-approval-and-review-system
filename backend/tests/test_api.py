@@ -254,6 +254,106 @@ def test_writeback_status_404_for_missing_contract(client: TestClient) -> None:
     assert client.get("/api/contracts/99999999/writeback/status").status_code == 404
 
 
+# ==================== 大盘筛选 / 批量操作（批次 6） ====================
+
+def test_list_contracts_filters_by_risk_level(client: TestClient, db) -> None:
+    """`risk_level` 筛选必须真的生效。
+
+    回归点：该参数曾写作 `risk`，而前端与 api-guide 都用 `risk_level`，
+    结果筛选被静默忽略、恒返回全量——用户看到的"筛选无效"即源于此。
+    """
+    c = Contract(
+        title="筛选用例", business_type="purchase", file_format=FileFormat.PDF.value,
+        file_object_key="x/original.pdf", file_name="x.pdf", file_size=10,
+        file_hash=hashlib.sha256(b"filter-case").hexdigest(),
+        source=ContractSource.UPLOAD.value,
+    )
+    db.add(c)
+    db.flush()
+    t = ReviewTask(contract_id=c.id, status=TaskStatus.COMPLETED.value,
+                   overall_risk="high")
+    db.add(t)
+    db.commit()
+
+    assert client.get("/api/contracts", params={"risk_level": "high"}).json()["total"] == 1
+    assert client.get("/api/contracts", params={"risk_level": "low"}).json()["total"] == 0
+    # 已废弃的旧参数名不再接受，应退化为"不筛选"（返回全量）而非报错
+    assert client.get("/api/contracts", params={"risk": "low"}).json()["total"] == 1
+
+
+def test_batch_delete_reports_per_item(client: TestClient, db) -> None:
+    """批量删除逐条回报：存在的删掉、不存在的说明原因，不整批回滚。"""
+    c = Contract(
+        title="批量删除用例", business_type="purchase", file_format=FileFormat.PDF.value,
+        file_object_key="x/original.pdf", file_name="x.pdf", file_size=10,
+        file_hash=hashlib.sha256(b"batch-del").hexdigest(),
+        source=ContractSource.UPLOAD.value,
+    )
+    db.add(c)
+    db.commit()
+
+    r = client.post("/api/contracts/batch/delete", json={"ids": [c.id, 99999999]})
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["total"], body["succeeded"], body["failed"]) == (2, 1, 1)
+    by_id = {item["id"]: item for item in body["results"]}
+    assert by_id[c.id]["ok"] is True
+    assert by_id[99999999]["ok"] is False
+    assert client.get(f"/api/contracts/{c.id}").status_code == 404
+
+
+def test_batch_retry_skips_non_blocked(client: TestClient, db) -> None:
+    """批量重试只认 blocked；其余条目逐条回报失败原因。"""
+    c = Contract(
+        title="批量重试用例", business_type="purchase", file_format=FileFormat.PDF.value,
+        file_object_key="x/original.pdf", file_name="x.pdf", file_size=10,
+        file_hash=hashlib.sha256(b"batch-retry").hexdigest(),
+        source=ContractSource.UPLOAD.value,
+    )
+    db.add(c)
+    db.flush()
+    t = ReviewTask(contract_id=c.id, status=TaskStatus.COMPLETED.value)
+    db.add(t)
+    db.commit()
+
+    r = client.post("/api/tasks/batch/retry", json={"ids": [c.id, 99999999]})
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["succeeded"], body["failed"]) == (0, 2)
+    details = " ".join(item["detail"] or "" for item in body["results"])
+    assert "非阻塞状态" in details and "任务不存在" in details
+
+
+def test_batch_rejects_empty_ids(client: TestClient) -> None:
+    """空 ids 应被 schema 拦下（422），而不是返回空成功。"""
+    assert client.post("/api/contracts/batch/delete", json={"ids": []}).status_code == 422
+
+
+def test_list_export_records(client: TestClient, db) -> None:
+    """导出记录列表返回可直接下载的 URL。"""
+    c = Contract(
+        title="导出记录用例", business_type="purchase", file_format=FileFormat.PDF.value,
+        file_object_key="x/original.pdf", file_name="x.pdf", file_size=10,
+        file_hash=hashlib.sha256(b"export-list").hexdigest(),
+        source=ContractSource.UPLOAD.value,
+    )
+    db.add(c)
+    db.flush()
+    from app.models import ExportRecord
+    db.add(ExportRecord(
+        contract_id=c.id, format="markdown", file_object_key=f"{c.id}/r.md",
+        file_size=123, created_by="法务",
+    ))
+    db.commit()
+
+    r = client.get(f"/api/contracts/{c.id}/report/exports")
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) == 1
+    assert rows[0]["format"] == "markdown"
+    assert rows[0]["download_url"] == f"/api/contracts/{c.id}/report/download/{rows[0]['id']}"
+
+
 def test_events_empty_for_contract_without_task(client: TestClient, db) -> None:
     c = Contract(
         title="无任务合同", business_type="purchase", file_format=FileFormat.PDF.value,

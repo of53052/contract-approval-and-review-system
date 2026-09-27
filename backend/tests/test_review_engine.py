@@ -697,6 +697,42 @@ def test_pipeline_rerun_is_idempotent(db: Session) -> None:
     assert orphans == 0
 
 
+@pytest.mark.skipif(not SAMPLE_DOCX.exists(), reason="示例合同不存在")
+@pytest.mark.skipif(not _wps_available(), reason="WPS COM 不可用")
+def test_pipeline_accepts_task_already_in_parsing(db: Session) -> None:
+    """重试链路回归：任务已被置为 parsing 时，Pipeline 不得再流转一次。
+
+    `POST /api/tasks/{id}/retry` 与批量重试都**先落库置 parsing 再起后台线程**
+    （避免线程读到未提交的旧状态），因此 Pipeline.run 拿到的就是 parsing 任务。
+    若它无条件再 `transition(PARSING)`，会撞上 parsing -> parsing 非法流转，
+    任务永久卡在 parsing——这正是批次 6 实测到的缺陷。
+    """
+    from app.services.llm import MockProvider
+    from app.workers.pipeline import Pipeline
+
+    h = hashlib.sha256(SAMPLE_DOCX.read_bytes()).hexdigest()
+    c = Contract(
+        title="重试置 parsing 用例", business_type=BusinessType.PURCHASE.value,
+        file_format=FileFormat.DOCX.value, file_object_key="test/original.docx",
+        file_name=SAMPLE_DOCX.name, file_size=SAMPLE_DOCX.stat().st_size,
+        file_hash=h, source=ContractSource.UPLOAD.value,
+    )
+    db.add(c)
+    db.flush()
+    # 模拟重试接口的状态：已经是 parsing
+    t = ReviewTask(contract_id=c.id, status=TaskStatus.PARSING.value)
+    db.add(t)
+    db.commit()
+
+    result = Pipeline(db, t, provider=MockProvider()).run(SAMPLE_DOCX)
+
+    assert result.status == TaskStatus.COMPLETED.value, (
+        "已处于 parsing 的任务必须能继续跑完，而不是被 parsing -> parsing 卡死"
+    )
+    db.refresh(t)
+    assert t.status == TaskStatus.COMPLETED.value
+
+
 # ==================== 元数据提取（批次 5）====================
 
 def test_extract_effective_condition() -> None:

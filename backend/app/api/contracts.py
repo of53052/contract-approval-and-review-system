@@ -33,6 +33,9 @@ from app.models.enums import (
 )
 from app.schemas import (
     AnchorOut,
+    BatchIn,
+    BatchItemResult,
+    BatchResultOut,
     ClauseOut,
     ContractDetail,
     ContractListItem,
@@ -76,7 +79,7 @@ def _to_list_item(c: Contract, t: ReviewTask | None) -> ContractListItem:
 def list_contracts(
     db: Session = Depends(get_db),
     status: str | None = Query(default=None, description="按任务状态筛选"),
-    risk: str | None = Query(default=None, description="按综合风险等级筛选"),
+    risk_level: str | None = Query(default=None, description="按综合风险等级筛选"),
     business_type: str | None = Query(default=None, description="按业务类型筛选"),
     keyword: str | None = Query(default=None, description="按合同名称/编号模糊搜索"),
     page: int = Query(default=1, ge=1),
@@ -93,8 +96,8 @@ def list_contracts(
 
     if status:
         base = base.where(ReviewTask.status == status)
-    if risk:
-        base = base.where(ReviewTask.overall_risk == risk)
+    if risk_level:
+        base = base.where(ReviewTask.overall_risk == risk_level)
     if business_type:
         base = base.where(Contract.business_type == business_type)
     if keyword:
@@ -468,6 +471,36 @@ def download_contract_original(contract_id: int, db: Session = Depends(get_db)) 
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
         },
+    )
+
+
+@router.post("/batch/delete", response_model=BatchResultOut, summary="批量软删除")
+def batch_delete(
+    body: BatchIn, db: Session = Depends(get_db)
+) -> BatchResultOut:
+    """批量软删除合同（PRD 2.4.5「批量操作」）。
+
+    **逐条处理并逐条回报**：某条不存在或已删除时只标记该条失败，
+    不影响其余条目——批量操作最忌讳"一条出错整批回滚"，
+    用户勾了 10 条只成功 9 条时得知道是哪条没成。
+    """
+    results: list[BatchItemResult] = []
+    for cid in body.ids:
+        c = db.get(Contract, cid)
+        if c is None:
+            results.append(BatchItemResult(id=cid, ok=False, detail="合同不存在"))
+            continue
+        if c.deleted_at is not None:
+            results.append(BatchItemResult(id=cid, ok=False, detail="已删除，跳过"))
+            continue
+        c.deleted_at = datetime.now()
+        results.append(BatchItemResult(id=cid, ok=True, detail="已删除"))
+
+    db.commit()
+    ok = sum(1 for r in results if r.ok)
+    logger.info("批量删除: 共 %s 条，成功 %s 条", len(results), ok)
+    return BatchResultOut(
+        total=len(results), succeeded=ok, failed=len(results) - ok, results=results,
     )
 
 

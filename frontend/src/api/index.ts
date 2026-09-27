@@ -2,12 +2,14 @@
 import { api } from "./client";
 import type {
   Annotation,
+  BatchResult,
   Clause,
   ContractDetail,
   ContractListItem,
   ContractMetadataItem,
   Page,
   ExportRecord,
+  ExportRecordItem,
   ReportPreview,
   RiskItem,
   TaskEvent,
@@ -33,6 +35,17 @@ export const uploadContract = async (form: FormData): Promise<ContractDetail> =>
 
 export const deleteContract = async (id: number) =>
   (await api.delete(`/api/contracts/${id}`)).data;
+
+/** 批量软删除。逐条返回结果，部分失败时前端展示失败明细。 */
+export const batchDeleteContracts = async (ids: number[]): Promise<BatchResult> =>
+  (await api.post("/api/contracts/batch/delete", { ids })).data;
+
+/** 批量重试（按合同 ID）。非 blocked 的条目会在 results 里标失败。 */
+export const batchRetryTasks = async (contractIds: number[]): Promise<BatchResult> =>
+  (await api.post("/api/tasks/batch/retry", { ids: contractIds })).data;
+
+export const listExportRecords = async (contractId: number): Promise<ExportRecordItem[]> =>
+  (await api.get(`/api/contracts/${contractId}/report/exports`)).data;
 
 export const listClauses = async (id: number): Promise<Clause[]> =>
   (await api.get(`/api/contracts/${id}/clauses`)).data;

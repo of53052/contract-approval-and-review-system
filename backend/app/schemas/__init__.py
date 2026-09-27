@@ -6,6 +6,9 @@
 
 from app.schemas.common import ErrorOut, OkOut, Page
 from app.schemas.contracts import (
+    BatchIn,
+    BatchItemResult,
+    BatchResultOut,
     ClauseOut,
     ContractDetail,
     ContractListItem,
@@ -40,6 +43,7 @@ from app.schemas.tasks import (
 
 __all__ = [
     "ErrorOut", "OkOut", "Page",
+    "BatchIn", "BatchItemResult", "BatchResultOut",
     "ClauseOut", "ContractDetail", "ContractListItem", "MetadataOut", "TaskEventOut",
     "AnchorOut", "AnnotationIn", "AnnotationOut", "EvidenceOut", "RiskItemOut",
     "RiskUpdateIn",

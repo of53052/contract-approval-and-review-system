@@ -11,6 +11,7 @@ import {
   Empty,
   Flex,
   Input,
+  Modal,
   Select,
   Space,
   Table,
@@ -21,19 +22,29 @@ import {
   App as AntApp,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { DownloadOutlined, ReloadOutlined, UploadOutlined } from "@ant-design/icons";
+import {
+  DownloadOutlined,
+  FileTextOutlined,
+  ReloadOutlined,
+  SyncOutlined,
+  UploadOutlined,
+} from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import dayjs from "dayjs";
 import {
+  batchDeleteContracts,
+  batchRetryTasks,
   deleteContract,
   listContracts,
+  listExportRecords,
   originalUrl,
+  retryTask,
   syncTodos,
   uploadContract,
 } from "../api";
 import { apiError } from "../api/client";
-import type { ContractListItem } from "../types";
+import type { BatchResult, ContractListItem } from "../types";
 import {
   BUSINESS_TYPE_LABEL,
   CONCLUSION_META,
@@ -41,6 +52,7 @@ import {
   STATUS_META,
   WRITEBACK_META,
   formatAmount,
+  formatBytes,
 } from "../constants";
 
 export default function Dashboard() {
@@ -50,6 +62,10 @@ export default function Dashboard() {
   const [status, setStatus] = useState<string | undefined>();
   const [riskLevel, setRiskLevel] = useState<string | undefined>();
   const [keyword, setKeyword] = useState("");
+  /** 勾选的行（批量操作的唯一输入源，不做"按筛选条件批量"）。 */
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  /** 打开导出记录弹窗的合同；null 表示关闭。 */
+  const [exportFor, setExportFor] = useState<ContractListItem | null>(null);
 
   const { data, isLoading, isFetching, refetch } = useQuery({
     queryKey: ["contracts", status, riskLevel],
@@ -86,6 +102,71 @@ export default function Dashboard() {
       qc.invalidateQueries({ queryKey: ["contracts"] });
     },
     onError: (e) => message.error(apiError(e)),
+  });
+
+  /**
+   * 展示批量操作结果。
+   *
+   * 部分失败必须逐条列出来——用户勾了 N 条，只知道"失败 2 条"是没法处理的。
+   * 全部成功时只弹一条轻提示，不打扰。
+   */
+  const showBatchResult = (res: BatchResult, action: string) => {
+    if (res.failed === 0) {
+      message.success(`${action}完成：${res.succeeded} 条`);
+      return;
+    }
+    const failedRows = res.results.filter((r) => !r.ok);
+    modal.info({
+      title: `${action}完成：成功 ${res.succeeded} / 失败 ${res.failed}`,
+      width: 480,
+      content: (
+        <div style={{ maxHeight: 260, overflow: "auto" }}>
+          {failedRows.map((r) => (
+            <div key={r.id} style={{ marginTop: 6 }}>
+              <Typography.Text type="danger">#{r.id}</Typography.Text>{" "}
+              <Typography.Text>{r.detail || "失败"}</Typography.Text>
+            </div>
+          ))}
+        </div>
+      ),
+    });
+  };
+
+  const batchDeleteMut = useMutation({
+    mutationFn: batchDeleteContracts,
+    onSuccess: (res) => {
+      showBatchResult(res, "批量删除");
+      setSelectedIds([]);
+      qc.invalidateQueries({ queryKey: ["contracts"] });
+    },
+    onError: (e) => message.error(apiError(e)),
+  });
+
+  const batchRetryMut = useMutation({
+    mutationFn: batchRetryTasks,
+    onSuccess: (res) => {
+      showBatchResult(res, "批量重试");
+      setSelectedIds([]);
+      qc.invalidateQueries({ queryKey: ["contracts"] });
+    },
+    onError: (e) => message.error(apiError(e)),
+  });
+
+  /** 行内重试（PRD 2.4.7：管理员在列表页直接触发"重新审查"）。 */
+  const retryMut = useMutation({
+    mutationFn: (taskId: number) => retryTask(taskId),
+    onSuccess: () => {
+      message.success("已重新提交审查");
+      qc.invalidateQueries({ queryKey: ["contracts"] });
+    },
+    onError: (e) => message.error(apiError(e)),
+  });
+
+  // 导出记录按需拉取：只有打开弹窗时才请求（enabled 由 exportFor 控制）
+  const exportsQuery = useQuery({
+    queryKey: ["exports", exportFor?.id],
+    queryFn: () => listExportRecords(exportFor!.id),
+    enabled: !!exportFor,
   });
 
   const onDelete = (row: ContractListItem) => {
@@ -224,13 +305,35 @@ export default function Dashboard() {
     {
       title: "操作",
       key: "action",
-      width: 150,
+      width: 220,
       fixed: "right",
       render: (_: unknown, row) => (
         <Space size={4}>
           <Button type="link" size="small" onClick={() => navigate(`/contracts/${row.id}`)}>
             工作台
           </Button>
+          {/* PRD 2.4.7：阻塞任务在列表页即可一键重新审查，不必先进工作台 */}
+          {row.status === "blocked" && row.task_id != null && (
+            <Tooltip title={row.blocked_reason || "重新走一遍解析与审查流水线"}>
+              <Button
+                type="link"
+                size="small"
+                icon={<SyncOutlined />}
+                loading={retryMut.isPending && retryMut.variables === row.task_id}
+                onClick={() => retryMut.mutate(row.task_id!)}
+              >
+                重试
+              </Button>
+            </Tooltip>
+          )}
+          <Tooltip title="查看该合同的报告导出历史">
+            <Button
+              type="link"
+              size="small"
+              icon={<FileTextOutlined />}
+              onClick={() => setExportFor(row)}
+            />
+          </Tooltip>
           <Tooltip title="下载原件">
             <Button
               type="link"
@@ -311,12 +414,73 @@ export default function Dashboard() {
           </Space>
         }
       >
+        {/* 批量操作条：勾选后才出现，避免空按钮占位干扰视觉（PRD 2.4.5「批量操作」） */}
+        {selectedIds.length > 0 && (
+          <Flex
+            align="center"
+            justify="space-between"
+            style={{
+              marginBottom: 12,
+              padding: "8px 12px",
+              background: "#e6f4ff",
+              border: "1px solid #91caff",
+              borderRadius: 6,
+            }}
+          >
+            <Typography.Text>
+              已选 <Typography.Text strong>{selectedIds.length}</Typography.Text> 项
+            </Typography.Text>
+            <Space>
+              <Button size="small" onClick={() => setSelectedIds([])}>
+                取消选择
+              </Button>
+              <Button
+                size="small"
+                icon={<SyncOutlined />}
+                loading={batchRetryMut.isPending}
+                onClick={() =>
+                  modal.confirm({
+                    title: `批量重试 ${selectedIds.length} 份合同？`,
+                    content: "仅对处于「阻塞」状态的任务生效，其余条目会逐条回报失败原因。",
+                    okText: "重试",
+                    cancelText: "取消",
+                    onOk: () => batchRetryMut.mutateAsync(selectedIds),
+                  })
+                }
+              >
+                批量重试
+              </Button>
+              <Button
+                size="small"
+                danger
+                loading={batchDeleteMut.isPending}
+                onClick={() =>
+                  modal.confirm({
+                    title: `批量删除 ${selectedIds.length} 份合同？`,
+                    content: "软删除，数据保留在库中但列表不再显示。",
+                    okText: "删除",
+                    okButtonProps: { danger: true },
+                    cancelText: "取消",
+                    onOk: () => batchDeleteMut.mutateAsync(selectedIds),
+                  })
+                }
+              >
+                批量删除
+              </Button>
+            </Space>
+          </Flex>
+        )}
         <Table<ContractListItem>
           rowKey="id"
           loading={isLoading}
           columns={columns}
           dataSource={rows}
           scroll={{ x: 1280 }}
+          rowSelection={{
+            selectedRowKeys: selectedIds,
+            onChange: (keys) => setSelectedIds(keys as number[]),
+            preserveSelectedRowKeys: true,
+          }}
           pagination={{ pageSize: 10, showSizeChanger: false }}
           locale={{
             emptyText: (
@@ -329,12 +493,13 @@ export default function Dashboard() {
           summary={(page) =>
             page.length ? (
               <Table.Summary.Row>
-                <Table.Summary.Cell index={0} colSpan={3}>
+                {/* 索引需含 rowSelection 的勾选列：勾选 + 名称 + 申请人 + 业务类型 = 4 列 */}
+                <Table.Summary.Cell index={0} colSpan={4}>
                   <Flex justify="flex-end">
                     <Typography.Text type="secondary">本页合计</Typography.Text>
                   </Flex>
                 </Table.Summary.Cell>
-                <Table.Summary.Cell index={3} align="right">
+                <Table.Summary.Cell index={4} align="right">
                   <Typography.Text strong>
                     {formatAmount(
                       String(
@@ -344,12 +509,79 @@ export default function Dashboard() {
                     )}
                   </Typography.Text>
                 </Table.Summary.Cell>
-                <Table.Summary.Cell index={4} colSpan={6} />
+                <Table.Summary.Cell index={5} colSpan={6} />
               </Table.Summary.Row>
             ) : null
           }
         />
       </Card>
+
+      {/* 导出记录列表（PRD 2.4.1「支持生成并导出审查意见报告」；接口早已就绪） */}
+      <Modal
+        open={!!exportFor}
+        title={`导出记录：${exportFor?.title ?? ""}`}
+        onCancel={() => setExportFor(null)}
+        footer={null}
+        width={620}
+      >
+        <Table
+          rowKey="id"
+          size="small"
+          loading={exportsQuery.isLoading}
+          dataSource={exportsQuery.data ?? []}
+          pagination={false}
+          locale={{
+            emptyText: (
+              <Empty
+                description="还没有导出记录。到工作台点「导出报告」即可生成。"
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+              />
+            ),
+          }}
+          columns={[
+            {
+              title: "格式",
+              dataIndex: "format",
+              width: 90,
+              render: (f: string) => <Tag>{f === "pdf" ? "PDF" : "Markdown"}</Tag>,
+            },
+            {
+              title: "大小",
+              dataIndex: "file_size",
+              width: 90,
+              render: (v: number | null) => (v ? formatBytes(v) : "—"),
+            },
+            {
+              title: "导出人",
+              dataIndex: "created_by",
+              width: 90,
+              render: (v: string | null) => v || "—",
+            },
+            {
+              title: "时间",
+              dataIndex: "created_at",
+              width: 140,
+              render: (v: string) => dayjs(v).format("MM-DD HH:mm:ss"),
+            },
+            {
+              title: "操作",
+              key: "action",
+              width: 80,
+              render: (_: unknown, row: { download_url: string }) => (
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  href={row.download_url}
+                  target="_blank"
+                >
+                  下载
+                </Button>
+              ),
+            },
+          ]}
+        />
+      </Modal>
     </div>
   );
 }

@@ -24,7 +24,7 @@ FastAPI 统一返回：
 | 404 | 资源不存在 | 合同 / 任务 / 风险项 / 导出记录不存在 |
 | 409 | 状态冲突 | 非 blocked 任务调重试；DOCX 尚无渲染用 PDF |
 | 413 | 文件过大 | 上传超过 20MB |
-| 422 | 参数校验失败 | 缺少必填查询参数（FastAPI 自动） |
+| 422 | 参数校验失败 | 缺少必填查询参数、`ids` 为空或超过 200 条（FastAPI 自动） |
 | 502 | 下游不可用 | MinIO 读取失败、审批系统不可达 |
 
 ### 1.3 幂等
@@ -33,7 +33,20 @@ FastAPI 统一返回：
 - `POST /api/tasks/sync-todos`：按 `file_hash` 去重，已存在的合同不重复建任务
 - `POST /api/contracts/{id}/writeback`：内容 hash 相同则复用回写记录（`deduplicated: true`）
 
-### 1.4 软删除
+### 1.4 列表筛选参数
+
+| 参数 | 取值 | 说明 |
+|---|---|---|
+| `status` | `pending` / `parsing` / `reviewing` / `completed` / `blocked` / `failed` | 按任务状态 |
+| `risk_level` | `high` / `medium` / `low` | 按综合风险等级 |
+| `business_type` | `purchase` / `sales` / `service` / `labor` | 按业务类型 |
+| `keyword` | 任意字符串 | 合同名称 / 编号模糊匹配 |
+
+> ⚠️ **风险等级的参数名是 `risk_level`**。曾误写作 `risk`，而前端与本文档
+> 都用 `risk_level`，结果是筛选被静默忽略、恒返回全量。改参数名时必须
+> 同步 `frontend/src/api/index.ts`，否则这类"不报错但没用"的缺陷极难发现。
+
+### 1.5 软删除
 
 只有 `contract` 支持软删除（原则 P6）。删除后：
 - 列表与详情均返回 404
@@ -53,10 +66,11 @@ FastAPI 统一返回：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/contracts` | 合同列表（大盘页）；支持 `status` / `risk_level` 过滤与分页 |
+| GET | `/api/contracts` | 合同列表（大盘页）；支持 `status` / `risk_level` / `business_type` / `keyword` 过滤与分页 |
 | GET | `/api/contracts/{id}` | 合同详情（含 `task_id`、`pdf_object_key`） |
 | POST | `/api/contracts/upload` | 上传合同（multipart）；`auto_review=true` 时立即启动审查 |
 | DELETE | `/api/contracts/{id}` | 软删除 |
+| POST | `/api/contracts/batch/delete` | 批量软删除（body: `{"ids": [1,2]}`） |
 | GET | `/api/contracts/{id}/clauses` | 条款列表（工作台左栏） |
 | GET | `/api/contracts/{id}/metadata` | 提取的元数据（含 `anchors`，供正文高亮字段位置） |
 | GET | `/api/contracts/{id}/events` | 任务事件轨迹（审计） |
@@ -81,7 +95,36 @@ FastAPI 统一返回：
 | GET | `/api/tasks/{id}` | 任务详情 |
 | GET | `/api/tasks/{id}/progress` | 进度（前端轮询；优先读 Redis，回退数据库） |
 | POST | `/api/tasks/{id}/retry` | 重试阻塞任务（仅 `blocked` 可重试，否则 409） |
+| POST | `/api/tasks/batch/retry` | 批量重试（body: `{"ids": [合同 ID...]}`，只认 `blocked`） |
 | POST | `/api/tasks/sync-todos` | 从审批系统拉待办建合同 + 任务 |
+
+#### 2.3.1 批量操作（PRD 2.4.5）
+
+```jsonc
+// POST /api/contracts/batch/delete
+// POST /api/tasks/batch/retry   （注意：这里传的是**合同 ID**，不是任务 ID）
+{"ids": [469, 470]}
+```
+
+响应统一为 `BatchResultOut`：
+
+```json
+{
+  "total": 2, "succeeded": 1, "failed": 1,
+  "results": [
+    {"id": 469, "ok": true,  "detail": "已重试"},
+    {"id": 470, "ok": false, "detail": "非阻塞状态（completed），跳过"}
+  ]
+}
+```
+
+**三条设计约束**：
+
+1. **逐条处理、逐条回报，不整批回滚**——用户勾了 10 条只成功 9 条时，
+   必须知道是**哪一条**没成，否则只能整批重来。
+2. **入参是显式 id 列表，不支持"按筛选条件批量"**——筛选条件下批量操作
+   会误伤：用户看到的是一页结果，实际影响的是全库匹配项。
+3. **`ids` 有界**（`1 ≤ len ≤ 200`，超限 422）——避免一次请求打满数据库连接。
 
 ### 2.4 风险 `risks`
 

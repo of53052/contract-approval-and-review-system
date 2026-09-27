@@ -105,8 +105,13 @@ class Pipeline:
         logger.info("任务 %s 开始执行，源文件 %s", self.task.id, source_path)
 
         try:
-            sm.transition(self.db, self.task, TaskStatus.PARSING)
-            self.db.commit()
+            # 幂等：重试接口会先把任务置为 parsing 再起后台线程（先落库再调度，
+            # 避免线程读到未提交的旧状态），此时"进入 parsing"已是既成事实。
+            # 若在这里再流转一次会触发 parsing -> parsing 非法流转，
+            # 任务将永久卡在 parsing（无任何调用点会把它救回来）。
+            if self.task.status != TaskStatus.PARSING.value:
+                sm.transition(self.db, self.task, TaskStatus.PARSING)
+                self.db.commit()
         except sm.InvalidTransition as exc:
             logger.error("任务 %s 无法进入 parsing: %s", self.task.id, exc)
             return self._fail_result(str(exc))

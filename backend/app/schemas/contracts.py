@@ -56,6 +56,38 @@ class ContractDetail(ContractListItem):
     summary: str | None = None
 
 
+class BatchIn(BaseModel):
+    """批量操作请求。
+
+    **为什么用显式 id 列表而不是"按筛选条件批量"**：筛选条件下批量操作
+    会误伤——用户看到的是一页结果，实际影响的是全库匹配项。演示系统里
+    这种"看不见的影响范围"是危险的，宁可让前端把勾选的 id 传上来。
+    """
+
+    ids: list[int] = Field(min_length=1, max_length=200, description="合同 ID 列表")
+
+
+class BatchItemResult(BaseModel):
+    """批量操作中单条的结果。
+
+    逐条返回而非只给汇总：部分失败时用户需要知道**哪几条**没成功，
+    否则只能整批重来。
+    """
+
+    id: int
+    ok: bool
+    detail: str | None = None
+
+
+class BatchResultOut(BaseModel):
+    """批量操作结果。"""
+
+    total: int
+    succeeded: int
+    failed: int
+    results: list[BatchItemResult] = Field(default_factory=list)
+
+
 class ClauseOut(BaseModel):
     """条款。`char_start`/`char_end` 供前端文本层高亮。"""
 

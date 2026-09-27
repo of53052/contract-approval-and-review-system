@@ -166,6 +166,32 @@ export interface ReportPreview {
   char_count: number;
 }
 
+/** 批量操作中单条的结果。 */
+export interface BatchItemResult {
+  id: number;
+  ok: boolean;
+  detail: string | null;
+}
+
+/** 批量操作结果。`failed > 0` 时前端应展示 `results` 里的失败明细。 */
+export interface BatchResult {
+  total: number;
+  succeeded: number;
+  failed: number;
+  results: BatchItemResult[];
+}
+
+/** 导出记录（`GET /api/contracts/{id}/report/exports`）。 */
+export interface ExportRecordItem {
+  id: number;
+  format: string;
+  object_key: string;
+  file_size: number | null;
+  created_by: string | null;
+  created_at: string;
+  download_url: string;
+}
+
 export interface ExportRecord {
   record_id: number;
   object_key: string;

@@ -18,7 +18,7 @@ from app.core.minio_client import get_minio, path_original
 from app.core.redis_client import get_redis, key_task_progress
 from app.models import Contract, ReviewTask
 from app.models.enums import TaskEventType, TaskStatus
-from app.schemas import TaskOut, TaskProgressOut
+from app.schemas import BatchIn, BatchItemResult, BatchResultOut, TaskOut, TaskProgressOut
 from app.services.approval import ApprovalError, get_adapter
 from app.workers import state_machine as sm
 
@@ -72,6 +72,38 @@ def get_progress(task_id: int, db: Session = Depends(get_db)) -> TaskProgressOut
     )
 
 
+@router.post("/batch/retry", response_model=BatchResultOut, summary="批量重试（阻塞任务）")
+def batch_retry(body: BatchIn, db: Session = Depends(get_db)) -> BatchResultOut:
+    """按**合同 ID** 批量重试其阻塞任务（PRD 2.4.5「批量操作」）。
+
+    逐条处理：非 blocked 的合同只标记该条失败并说明原因，不中断整批。
+    只允许 blocked → parsing（状态机约束），因此已完成的任务会被跳过。
+    """
+    results: list[BatchItemResult] = []
+    for contract_id in body.ids:
+        task = db.execute(
+            select(ReviewTask).where(ReviewTask.contract_id == contract_id)
+        ).scalar_one_or_none()
+
+        if task is None:
+            results.append(BatchItemResult(id=contract_id, ok=False, detail="任务不存在"))
+            continue
+        if task.status != TaskStatus.BLOCKED.value:
+            results.append(BatchItemResult(
+                id=contract_id, ok=False, detail=f"非阻塞状态（{task.status}），跳过"
+            ))
+            continue
+
+        _do_retry(db, task, operator="批量重试", source_path=None)
+        results.append(BatchItemResult(id=contract_id, ok=True, detail="已重试"))
+
+    ok = sum(1 for r in results if r.ok)
+    logger.info("批量重试: 共 %s 条，成功 %s 条", len(results), ok)
+    return BatchResultOut(
+        total=len(results), succeeded=ok, failed=len(results) - ok, results=results,
+    )
+
+
 @router.post("/{task_id}/retry", response_model=TaskOut, summary="重试（阻塞任务）")
 def retry_task(
     task_id: int,
@@ -95,14 +127,29 @@ def retry_task(
             detail=f"只有 blocked 任务可重试（当前 {t.status}）",
         )
 
-    deleted = sm.cleanup_for_retry(db, t)
-    sm.transition(db, t, TaskStatus.PARSING, operator=operator, detail="人工重试")
-    db.add(_retry_event(t.id, operator, deleted))
-    db.commit()
-    logger.info("任务 #%s 重试，清理: %s", task_id, deleted)
-
-    _schedule_pipeline(t.id, source_path)
+    _do_retry(db, t, operator=operator, source_path=source_path)
     return _to_task_out(t)
+
+
+def _do_retry(
+    db: Session, task: ReviewTask, *, operator: str, source_path: str | None
+) -> dict[str, int]:
+    """重试的唯一实现：清理旧产物 → 落库置 parsing → 起后台线程。
+
+    **单条重试与批量重试共用**：两处各写一遍状态流转正是 bug 温床
+    （曾出现批量路径漏改、任务卡死在 parsing 的情况）。
+
+    **先提交再调度**：后台线程会另开 Session 读任务状态，
+    若在未提交时就起线程，线程可能读到旧的 blocked 状态并重复流转。
+    """
+    deleted = sm.cleanup_for_retry(db, task)
+    sm.transition(db, task, TaskStatus.PARSING, operator=operator, detail="人工重试")
+    db.add(_retry_event(task.id, operator, deleted))
+    db.commit()
+    logger.info("任务 #%s 重试，清理: %s", task.id, deleted)
+
+    _schedule_pipeline(task.id, source_path)
+    return deleted
 
 
 def _retry_event(task_id: int, operator: str, deleted: dict[str, int]):
