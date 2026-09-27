@@ -467,15 +467,186 @@ _LABOR_RULES: list[dict] = [
 ]
 
 
+# ---------- 服务合同（我方为委托方）----------
+# 立场与采购相同（我方付款、对方交付），但风险面有自己的侧重：
+#   · **成果归属**是服务/外包场景的头号风险——成果是无形的，一旦归对方，
+#     我方既失去所有权又难以事后替换（采购有实物可退换，服务没有）；
+#   · **付款前置验收**同样成立，且服务验收标准更模糊，不挂钩风险更高；
+#   · 复用采购的通用项（责任、管辖、主体、金额、保密、不可抗力）。
+_SERVICE_RULES: list[dict] = [
+    {
+        "code": "LIABILITY_ASYMMETRY",
+        "name": "违约责任不对等",
+        "category": RiskCategory.LIABILITY,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.THRESHOLD,
+        # 同采购/销售：判"重责表述与轻责表述并存"，详见
+        # rule_engine._check_liability_asymmetry。
+        "config": {
+            "metric": "liability_asymmetry",
+            "severe_keywords": ["全部损失", "一切损失", "无上限", "不设上限", "不受限制"],
+            "mild_keywords": ["万分之一", "万分之五", "累计不超过", "不超过应付未付金额"],
+            "mild_ratio_max": 0.05,
+        },
+        "result_template": "双方违约责任明显不对等：一方承担无上限赔偿责任，另一方仅承担极小比例责任。",
+        "suggestion_template": "建议对等约定：双方均按合同总金额的同一比例承担违约责任，"
+                               "并均设置不超过合同总金额的赔偿上限。",
+        "conditions": [],
+    },
+    {
+        "code": "LIABILITY_UNCAPPED",
+        "name": "违约责任无上限",
+        "category": RiskCategory.LIABILITY,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.KEYWORD,
+        "config": {"keywords": ["无上限", "不设上限", "不受限制", "全部损失", "一切损失"],
+                   "match_all": False},
+        "result_template": "违约责任未设赔偿上限，我方责任敞口不可预估。",
+        "suggestion_template": "建议增加责任上限条款：任一方承担的赔偿责任总额不超过合同总金额。",
+        "conditions": [],
+    },
+    {
+        "code": "JURISDICTION_INVALID",
+        "name": "管辖地约定违规",
+        "category": RiskCategory.JURISDICTION,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.BLACKLIST,
+        "config": {"blacklist": ["境外仲裁", "香港仲裁", "新加坡仲裁", "对方所在地法院",
+                                 "服务方所在地法院", "乙方所在地法院"]},
+        "result_template": "争议管辖地约定不利于我方，可能显著提高维权成本。",
+        "suggestion_template": "建议改为由我方所在地有管辖权的人民法院管辖。",
+        "conditions": [],
+    },
+    {
+        "code": "NO_ACCEPTANCE_BEFORE_PAY",
+        "name": "未设置付款前置验收",
+        "category": RiskCategory.ACCEPTANCE,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.PRESENCE,
+        # 语义是"付款条款内必须提到验收"。服务成果验收标准天然模糊，
+        # 不挂钩付款时我方几乎失去履约抗辩手段（同采购，见 _apply_presence）。
+        "config": {
+            "within_clause_type": ClauseType.PAYMENT.value,
+            "required_pattern": "验收",
+            # 样本里「合同金额」与「付款方式」同属 payment 类，
+            # 不指定会锚到前者（同采购批次 9 的修复）。
+            "anchor_keywords": ["付款", "支付"],
+        },
+        "result_template": "付款条款未以验收为前置条件，存在先付款后验收风险。",
+        "suggestion_template": "建议约定：甲方验收合格并出具验收单后，方支付相应款项。",
+        "conditions": [],
+    },
+    {
+        "code": "IP_TRANSFER_ALL",
+        "name": "知识产权全部转让对方",
+        "category": RiskCategory.INTELLECTUAL_PROPERTY,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.KEYWORD,
+        # 服务/外包场景的头号风险：成果是无形的，归属一旦给出去，
+        # 我方既失去所有权，又难以像采购那样"退货换货"。关键词需覆盖
+        # "知识产权归乙方/服务方所有""服务成果归对方"等多种表述。
+        "config": {"keywords": [
+            "知识产权归供应商所有", "知识产权归乙方所有", "知识产权归对方所有",
+            "知识产权归甲方所有", "全部知识产权归", "知识产权均归",
+            "所有权归供应商", "所有权归乙方", "成果归供应商", "成果归乙方",
+            "服务成果归乙方", "交付物归乙方",
+        ], "match_all": False},
+        "result_template": "知识产权归属约定不利于我方，可能丧失核心成果所有权。",
+        "suggestion_template": "建议约定：本项目专门产生的服务成果与交付物知识产权归我方所有，"
+                               "对方既有知识产权仍归其所有并授予我方必要许可。",
+        "conditions": [],
+    },
+    {
+        "code": "SUBJECT_MISSING",
+        "name": "主体信息缺失",
+        "category": RiskCategory.SUBJECT_QUALIFICATION,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.PRESENCE,
+        "config": {"required_keys": ["party_a_name", "party_b_name"]},
+        "result_template": "合同主体信息不完整，无法核实对方资质。",
+        "suggestion_template": "建议补全双方全称与统一社会信用代码。",
+        "conditions": [
+            _c("metadata.party_a_name", RuleOperator.EXISTS, None),
+            _c("metadata.party_b_name", RuleOperator.EXISTS, None),
+        ],
+    },
+    {
+        "code": "SUBJECT_ABNORMAL",
+        "name": "主体列入经营异常",
+        "category": RiskCategory.SUBJECT_QUALIFICATION,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.BLACKLIST,
+        "config": {"source": "subject_blacklist", "match_field": "subject_name"},
+        "result_template": "相对方主体被列入经营异常名录，履约能力存疑。",
+        "suggestion_template": "建议要求对方提供资质证明，或提供履约担保后再签约。",
+        "conditions": [_c("metadata.party_b_name", RuleOperator.EXISTS, None)],
+    },
+    # ---- 中风险 ----
+    {
+        "code": "PENALTY_OVER_LIMIT",
+        "name": "违约金比例超限",
+        "category": RiskCategory.LIABILITY,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.THRESHOLD,
+        "config": {"threshold": 0.20, "metric": "penalty_ratio", "direction": "gt"},
+        "result_template": "违约金比例超过 {threshold} 的参考上限。",
+        "suggestion_template": "建议将违约金比例下调至合同总金额的 20% 以内。",
+        "conditions": [_c("metadata.amount", RuleOperator.EXISTS, None)],
+    },
+    {
+        "code": "CONFIDENTIALITY_NO_TERM",
+        "name": "保密义务无期限",
+        "category": RiskCategory.CONFIDENTIALITY,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        "config": {"required_pattern": "保密期限"},
+        "result_template": "保密条款未明确期限，义务边界不清晰。",
+        "suggestion_template": "建议约定：保密义务自签署之日起持续 {n} 年。",
+        "conditions": [],
+    },
+    {
+        "code": "FORCE_MAJEURE_NO_NOTICE",
+        "name": "不可抗力无通知时效",
+        "category": RiskCategory.FORCE_MAJEURE,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        "config": {"required_pattern": "日内通知"},
+        "result_template": "不可抗力条款未约定通知时效，事后举证易生争议。",
+        "suggestion_template": "建议约定：受影响方应在不可抗力发生后 15 日内书面通知对方。",
+        "conditions": [],
+    },
+    {
+        "code": "AMOUNT_MISSING",
+        "name": "合同金额缺失",
+        "category": RiskCategory.AMOUNT_PAYMENT,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        "config": {"required_keys": ["amount"]},
+        "result_template": "未提取到合同金额，影响后续比例类规则判定。",
+        "suggestion_template": "建议在合同中以大写与小写并列方式明确合同总金额。",
+        "conditions": [_c("metadata.amount", RuleOperator.EXISTS, None)],
+    },
+    {
+        "code": "CURRENCY_MISSING",
+        "name": "币种缺失",
+        "category": RiskCategory.AMOUNT_PAYMENT,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        "config": {"required_keys": ["currency"]},
+        "result_template": "未明确币种，涉外场景下金额存在歧义。",
+        "suggestion_template": "建议明确约定合同币种（如人民币 CNY）。",
+        "conditions": [_c("metadata.currency", RuleOperator.EXISTS, None)],
+    },
+]
+
+
 #: 业务类型 → 该类型下启用的规则。
 #: 新增合同类型时**只在这里加一组**，不要在别处复挂其他类型的规则。
 RULES_BY_TYPE: dict[str, list[dict]] = {
     BusinessType.PURCHASE: _PURCHASE_RULES,
     BusinessType.SALES: _SALES_RULES,
     BusinessType.LABOR: _LABOR_RULES,
-    # 服务合同暂无独立规则集：它的风险面与销售/采购高度重叠，
-    # 在没有真实示例合同时凭空造规则只会产生无法验证的配置。
-    BusinessType.SERVICE: [],
+    BusinessType.SERVICE: _SERVICE_RULES,
 }
 
 #: 全部规则的扁平视图（供 dry-run 统计与测试遍历）。

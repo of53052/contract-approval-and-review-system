@@ -302,7 +302,7 @@ def _ocr_pdf(
         ocr_dpi=dpi,
         avg_confidence=avg_conf or None,
         notes=[
-            f"OCR 识别结果，坐标精度有限（字符框按行等宽切分，非真实字宽）；"
+            f"OCR 识别结果，坐标为 OCR 检测框换算（字/词级，非像素级字形边界）；"
             f"来源: {source_path.name if source_path else path.name}"
         ],
     )

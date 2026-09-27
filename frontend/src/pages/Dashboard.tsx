@@ -491,29 +491,6 @@ export default function Dashboard() {
               />
             ),
           }}
-          summary={(page) =>
-            page.length ? (
-              <Table.Summary.Row>
-                {/* 索引需含 rowSelection 的勾选列：勾选 + 名称 + 申请人 + 业务类型 = 4 列 */}
-                <Table.Summary.Cell index={0} colSpan={4}>
-                  <Flex justify="flex-end">
-                    <Typography.Text type="secondary">本页合计</Typography.Text>
-                  </Flex>
-                </Table.Summary.Cell>
-                <Table.Summary.Cell index={4} align="right">
-                  <Typography.Text strong>
-                    {formatAmount(
-                      String(
-                        page.reduce((s, r) => s + (r.amount ? Number(r.amount) : 0), 0),
-                      ),
-                      "CNY",
-                    )}
-                  </Typography.Text>
-                </Table.Summary.Cell>
-                <Table.Summary.Cell index={5} colSpan={6} />
-              </Table.Summary.Row>
-            ) : null
-          }
         />
       </Card>
 

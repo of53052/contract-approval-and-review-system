@@ -29,6 +29,11 @@ from app.services.parsing.ocr_engine import (
     OcrPageResult,
     build_ocr_blocks,
 )
+from app.services.parsing.ocr_engine import (
+    RETURN_WORD_BOX,
+    _split_line_box,
+)
+from app.core.redis_client import OCR_CACHE_VERSION, key_ocr_cache
 from app.services.parsing.types import CharBox, DocumentText, PageText
 from app.services.review.clause_splitter import extract_metadata, split_clauses
 
@@ -239,6 +244,90 @@ def test_ocr_page_result_json_roundtrip_preserves_char_boxes() -> None:
     )
     restored = OcrPageResult.from_json(original.to_json())
     assert restored == original
+
+
+# ==================== 字符级框（坐标精度，R14'） ====================
+#
+# 背景：早期实现按"行内等宽"把行框切给各字符，抹平了汉字（1em）与
+# 数字/字母（0.2~0.6em）的宽度差。混排行会累积漂移——实测含金额/编号的
+# 字段框左边界前移 37~63pt，用户可见为"提取字段的框往前偏移"。
+# 现在改用 OCR 自身的字/词框（return_word_box），本组用例钉住这条接缝。
+
+def test_return_word_box_is_enabled() -> None:
+    """字符级框必须开启——关掉则坐标退化为等宽估算（回归到 R14 的缺陷）。"""
+    assert RETURN_WORD_BOX is True
+
+
+def test_split_line_box_uses_word_boxes_when_counts_match() -> None:
+    """词框数与字符数一致时，逐字采用真实词框，而不是等宽切分。
+
+    构造一个"行框内宽度分布不均"的行：前 4 个汉字各占 20px，
+    末尾数字只占 5px。等宽模型会把数字框推到很右边；字符级模型不会。
+    """
+    text = "金额2"
+    # 行框 0~85px：汉字 20px 一个、数字 5px —— 总量刻意不等于 n 等分
+    word_boxes = [
+        [[0, 0], [20, 0], [20, 10], [0, 10]],
+        [[20, 0], [40, 0], [40, 10], [20, 10]],
+        [[75, 0], [80, 0], [80, 10], [75, 10]],
+    ]
+    boxes = _split_line_box(text, 0.0, 0.0, 85.0, 10.0, word_boxes, scale=1.0)
+    assert len(boxes) == len(text)
+    # 数字 "2" 的真实位置在 75~80，等宽切分会落在 56.7~85 这种区间
+    assert boxes[2][0] == pytest.approx(75.0)
+    assert boxes[2][2] == pytest.approx(80.0)
+
+
+def test_split_line_box_falls_back_to_equal_width_on_count_mismatch() -> None:
+    """词框数与字符数不符时必须回退等宽，而不是错位对齐。
+
+    少数行 RapidOCR 会为空格额外产出词框（实测「第二条 合同金额」是 8 框 7 字）。
+    此时逐个 zip 会把每字都对到下一位，整行文字错位——必须拒绝。
+    """
+    text = "第二条 合同金额"        # 7 个非空字符 + 1 个空格 = 8 字符
+    word_boxes = [
+        [[i * 10, 0], [i * 10 + 9, 0], [i * 10 + 9, 10], [i * 10, 10]]
+        for i in range(3)          # 刻意只给 3 个，与 8 个字符不符
+    ]
+    boxes = _split_line_box(text, 0.0, 0.0, 80.0, 10.0, word_boxes, scale=1.0)
+    assert len(boxes) == len(text)
+    step = 80.0 / len(text)
+    assert boxes[0] == pytest.approx((0.0, 0.0, step, 10.0))
+    assert boxes[-1][2] == pytest.approx(80.0)
+
+
+def test_split_line_box_without_word_boxes_is_equal_width() -> None:
+    """OCR 未给词框（None/空）时回退等宽——向后兼容旧行为。"""
+    for empty in (None, []):
+        boxes = _split_line_box("甲乙", 0.0, 0.0, 20.0, 10.0, empty, scale=1.0)
+        assert len(boxes) == 2
+        assert boxes[0] == pytest.approx((0.0, 0.0, 10.0, 10.0))
+        assert boxes[1] == pytest.approx((10.0, 0.0, 20.0, 10.0))
+
+
+def test_split_line_box_applies_scale() -> None:
+    """词框是像素坐标，必须乘 (72/DPI) 换算成 PDF point。"""
+    text = "甲"
+    word_boxes = [[[100, 200], [150, 200], [150, 240], [100, 240]]]
+    boxes = _split_line_box(text, 0.0, 0.0, 999.0, 999.0, word_boxes, scale=72.0 / 200.0)
+    assert boxes[0] == pytest.approx((36.0, 72.0, 54.0, 86.4))
+
+
+def test_split_line_box_empty_text_returns_empty() -> None:
+    """空文本返回空列表——避免下游 `text` 与 `char_boxes` 长度不一致。"""
+    assert _split_line_box("", 0.0, 0.0, 10.0, 10.0, None, scale=1.0) == []
+
+
+def test_ocr_cache_key_is_versioned() -> None:
+    """缓存键必须带算法版本：换坐标算法后旧条目不得再命中。
+
+    否则修完坐标仍读到缓存里的旧（等宽）坐标，表现为"改了没效果"。
+    """
+    key = key_ocr_cache("abc123", 2)
+    assert f"v{OCR_CACHE_VERSION}" in key
+    # 与旧版（无版本段）不同，旧缓存自然失配
+    assert key != "ocr:abc123:2"
+    assert key.endswith(":abc123:2")
 
 
 # ==================== 端到端（需真实 OCR） ====================

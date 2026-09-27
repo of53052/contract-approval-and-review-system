@@ -1,0 +1,80 @@
+{
+  "contract": "技术服务合同-高风险样本.docx",
+  "sample_dir": "service",
+  "business_type": "service",
+  "note": "服务/外包合同（我方为委托方，付款方）。立场与采购相同，但风险面另有侧重：服务成果是无形的，知识产权一旦归对方便无法像采购那样退换，因此『成果归属』是服务场景的头号风险。样本同时覆盖 PRD 2.4.9 场景二的『责任不对等』。anchor_quote 按解析后落库的 quote_text 书写。",
+  "expected_overall": "high",
+  "expected_conclusion": "reject",
+  "expected_risks": [
+    {
+      "title": "知识产权全部转让对方",
+      "match_keywords": ["知识产权"],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "服务成果所有权归对方，我方既失去所有权又无法像采购那样退换",
+      "anchor_quote": "第四条服务成果与知识产权\n乙方提供的服务成果及交付物，其所有权归乙方。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "未设置付款前置验收",
+      "match_keywords": ["付款前置验收", "先付款后验收"],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "付款条款未以验收为前置条件，服务成果质量缺乏履约抗辩手段",
+      "anchor_quote": "第三条付款方式\n合同签订后5 日内，甲方应一次性支付全部服务费用。",
+      "expected_anchor_level": "paragraph"
+    },
+    {
+      "title": "违约责任不对等",
+      "match_keywords": ["不对等"],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "PRD 2.4.9 场景二：一方承担无上限赔偿，另一方仅万分之一滞纳金",
+      "anchor_quote": "逾期付款的，每日按应付未付金额的万分之一支付滞纳金；乙方逾期交付的，\n应承担甲方全部损失，赔偿责任无上限。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "违约责任无上限",
+      "match_keywords": ["无上限"],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "单侧无上限：规则与 LLM 均命中，取高后为高风险",
+      "anchor_quote": "应付未付金额的万分之一支付滞纳金；乙方逾期交付的，\n应承担甲方全部损失，赔偿责任无上限。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "管辖地约定违规",
+      "match_keywords": ["管辖", "香港仲裁"],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "约定香港仲裁，维权成本高",
+      "anchor_quote": "第八条争议解决\n因本合同产生的争议，提交香港仲裁。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "保密义务无期限",
+      "match_keywords": ["保密"],
+      "risk_level": "medium",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "保密义务未约定期限",
+      "anchor_quote": "第七条保密义务\n双方对因履行本合同知悉的商业秘密负有保密义务。",
+      "expected_anchor_level": "paragraph"
+    },
+    {
+      "title": "不可抗力无通知时效",
+      "match_keywords": ["不可抗力"],
+      "risk_level": "medium",
+      "must_anchor": true,
+      "expected_anchor_page": 2,
+      "why": "未约定通知时效与证明文件要求",
+      "anchor_quote": "第九条不可抗力\n因不可抗力不能履行的，受影响方应及时通知对方。",
+      "expected_anchor_level": "paragraph"
+    }
+  ]
+}

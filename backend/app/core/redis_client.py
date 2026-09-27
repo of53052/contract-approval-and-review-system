@@ -36,13 +36,23 @@ def key_task_progress(task_id: int) -> str:
     return f"task:{task_id}:progress"
 
 
+#: OCR 缓存键的版本号。**改变坐标算法时必须 +1**。
+#: 缓存的是 `OcrPageResult` 整体（含 `char_boxes`），换算法后旧条目里的坐标
+#: 已经不对，但键名不变则仍会被命中——表现为"改了代码却没效果"。
+#: v1 → v2：字符框由"行内等宽切分"改为 OCR 的字符级框（见 R14'）。
+OCR_CACHE_VERSION = 2
+
+
 def key_ocr_cache(file_hash: str, page_no: int) -> str:
     """OCR 结果缓存键。
 
     用 file_hash 而非 contract_id：同一份文件重复上传时可直接命中，
     避免重跑 6 秒/页的 OCR（见 docs/data-model.md §8.2）。
+
+    键里带 `OCR_CACHE_VERSION`：换坐标算法后旧键自然失配，
+    无需手工清理 Redis（见该常量的说明）。
     """
-    return f"ocr:{file_hash}:{page_no}"
+    return f"ocr:v{OCR_CACHE_VERSION}:{file_hash}:{page_no}"
 
 
 def key_anchor_cache(contract_id: int, quote_hash: str) -> str:

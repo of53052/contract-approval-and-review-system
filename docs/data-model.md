@@ -1166,12 +1166,16 @@ stateDiagram-v2
 | 键 | TTL | 失效时机 |
 |---|---|---|
 | `task:{id}:progress` | 24h | 任务完成 |
-| `ocr:{hash}:{page}` | 7d | 主动清理（按需） |
+| `ocr:v{ver}:{hash}:{page}` | 7d | 主动清理（按需）；版本号变化后旧键自然失配 |
 | `anchor:{cid}:{qhash}` | 7d | 重解析时按 contract_id 清理 |
 | `llm:{prompt_hash}` | 1h | 自然过期 |
 
 > ⚠️ **OCR 缓存键用 `file_hash` 而非 `contract_id`**：同一份文件重复上传时
 > 直接命中缓存，避免重跑 6 秒/页的 OCR。这是架构文档 §13.3 幂等性的数据层支撑。
+>
+> ⚠️ **键里带 `OCR_CACHE_VERSION`**（`app/core/redis_client.py`）：缓存的是整个
+> `OcrPageResult`（含 `char_boxes`），坐标算法一变，旧条目里的坐标就不再正确，
+> 但键名不变仍会被命中——表现为"改了代码却没有效果"。因此**换坐标算法必须 +1**。
 
 ---
 
@@ -1349,12 +1353,12 @@ flowchart LR
 | 表 | 内容 | 条数 |
 |---|---|---|
 | `rule_template` | 采购 / 销售 / 服务 / 劳动 各一套 | 4 |
-| `rule` | 按业务类型分组（见下），对应架构文档 §8.5 | 27 |
+| `rule` | 按业务类型分组（见下），对应架构文档 §8.5 | 39 |
 | `rule_condition` | 每条规则 0~3 个条件 | ~40 |
 | `standard_clause` | 各条款类型的标准文本 | ~15 |
 | `subject_blacklist` | 虚构的异常主体（演示用） | 5 |
 
-**规则种子按业务类型分组**（批次 9 修正）
+**规则种子按业务类型分组**（批次 9 分组，批次 10 补齐服务）
 
 ⚠️ 原先**所有规则都挂在"采购合同"模板下**，其余三个模板是空壳。只有采购合同是
 真实输入时问题不显；一旦有销售/劳动合同，就变成两类实际故障：
@@ -1366,7 +1370,12 @@ flowchart LR
 | `purchase` 采购 | 12 | `LIABILITY_UNCAPPED` / `LIABILITY_ASYMMETRY` / `JURISDICTION_INVALID` / `NO_ACCEPTANCE_BEFORE_PAY` / `IP_TRANSFER_ALL` / `SUBJECT_MISSING` / `SUBJECT_ABNORMAL` / `PENALTY_OVER_LIMIT` / `CONFIDENTIALITY_NO_TERM` / `FORCE_MAJEURE_NO_NOTICE` / `AMOUNT_MISSING` / `CURRENCY_MISSING` |
 | `sales` 销售 | 8 | `LIABILITY_ASYMMETRY` / `LIABILITY_UNCAPPED` / `JURISDICTION_INVALID` / `SUBJECT_MISSING` / `SUBJECT_ABNORMAL` / `PENALTY_OVER_LIMIT` / `CONFIDENTIALITY_NO_TERM` / `FORCE_MAJEURE_NO_NOTICE` |
 | `labor` 劳动 | 7 | `PROBATION_PAY_LOW` / `SOCIAL_INSURANCE_WAIVED` / `WORKER_LIQUIDATED_DAMAGES` / `OVERTIME_WAIVED` / `NON_COMPETE_NO_COMPENSATION` / `CONFIDENTIALITY_NO_TERM` / `SUBJECT_MISSING` |
-| `service` 服务 | **0** | —（已知缺口，见 `architecture.md` R18） |
+| `service` 服务 | 12 | `LIABILITY_ASYMMETRY` / `LIABILITY_UNCAPPED` / `JURISDICTION_INVALID` / `NO_ACCEPTANCE_BEFORE_PAY` / `IP_TRANSFER_ALL` / `SUBJECT_MISSING` / `SUBJECT_ABNORMAL` / `PENALTY_OVER_LIMIT` / `CONFIDENTIALITY_NO_TERM` / `FORCE_MAJEURE_NO_NOTICE` / `AMOUNT_MISSING` / `CURRENCY_MISSING` |
+
+**批次 10 补齐 `service`**：规则集立场与采购相同（我方付款、对方交付），
+但 `IP_TRANSFER_ALL` 的关键词扩到服务表述（"服务成果归乙方""交付物归乙方"）——
+服务成果是无形的，归属一旦给出去无法像采购那样退换，是服务场景的头号风险。
+详见 `architecture.md` §18.2.6。
 
 **两条批次 9 新增的规则**
 

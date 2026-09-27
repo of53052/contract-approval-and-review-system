@@ -7,7 +7,13 @@
 
     OCR 像素坐标 × (72 / DPI) = PDF point 坐标
 
-实测误差 0.2~5.1 pt，属检测框 padding 的正常范围。
+实测**行框**误差 0.2~5.1 pt，属检测框 padding 的正常范围。
+
+**字符级框取自 OCR 自身的字/词检测**（`return_word_box=True`），不是按行宽估算：
+RapidOCR 的 `CalRecBoxes` 用识别阶段的 CTC 列信息反推每个汉字、每个英文单词的
+真实位置，实测相对真实文本层**均值 −1.9pt、最大约 12pt**。早期实现按"行内等宽"
+切分，抹平了汉字（1em）与数字/字母（0.2~0.6em）的宽度差，导致混排行累积漂移——
+实测含金额/编号的字段框左边界前移 37~63pt（见 R14'）。
 
 **批次 8 起启用**：dispatcher 的扫描件 / 图片路径会路由到本模块，
 开关为 `.env` 的 `OCR_ENABLED`（默认 true）。
@@ -15,6 +21,10 @@
 除了坐标映射，本模块还负责**把 OCR 行文本组装成块**（`build_ocr_blocks`）：
 原生 PDF 的段落边界来自 PyMuPDF 版面分析，而 OCR 只有"一行行文字 + 字符框"，
 不补块的话下游 `split_clauses` 会切出 0 条条款。
+
+⚠️ 字符框数量与识别文本**不保证严格对齐**（少数行 RapidOCR 会为空格也产出词框）。
+`_split_line_box` 按"数量相等则逐个采用、否则回退行内等宽"处理，两条路径都保证
+与 `text` 逐字符一一对应——下游 `char_boxes[i] ↔ text[i]` 的契约不能破。
 """
 
 from __future__ import annotations
@@ -42,6 +52,61 @@ POINTS_PER_INCH = 72.0
 #: 低于此置信度的识别结果整页标记为低质量，触发 blocked(blurred)
 MIN_AVG_CONFIDENCE = 0.5
 
+#: 传给 RapidOCR 的 ``return_word_box`` 开关。True 时结果里会带上**字符级框**，
+#: 在 ``item[3]``（框列表）与 ``item[4]``（字符列表）；这是本模块坐标精度的来源，
+#: 关掉会退化成"行内等宽估算"（见模块 docstring）。做成常量便于测试断言接线。
+RETURN_WORD_BOX = True
+
+#: ``return_word_box=True`` 时结果的结构：
+#: ``[行框, 文本, 置信度, 字符框, 字符, 逐字置信度]``
+_ITEM_WORD_BOX = 3
+
+
+def _split_line_box(
+    text: str,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    word_boxes: list | None,
+    scale: float,
+) -> list[tuple[float, float, float, float]]:
+    """把一行文本切成逐字符的框，返回与 `text` **等长**的框列表。
+
+    优先用 OCR 给出的字符级词框（汉字是单字、英文/数字是词级），
+    拿不到或数量对不上时回退到"行内等宽切分"。
+
+    行/全角字符词框可能带上尾随的空白框——这与识别文本里的空格一一对应，
+    此时数量仍相等，照常采用即可（对齐方向由 `text` 的字符顺序决定）。
+
+    **为什么必须保证等长**：`PageText.__post_init__` 校验 `text` 与 `char_boxes`
+    长度相等，这是 `char_start/char_end` 能落到具体字符上的前提。
+    """
+    n = len(text)
+    if n == 0:
+        return []
+
+    # 用 `is not None` 而非真值判断：若上游把词框返回为 ndarray，
+    # `if word_boxes` 会因"真值不明确"直接抛错，而 `len()` 是安全的。
+    if word_boxes is not None and len(word_boxes) == n:
+        boxes: list[tuple[float, float, float, float]] = []
+        for wb in word_boxes:
+            wx = [p[0] for p in wb]
+            wy = [p[1] for p in wb]
+            boxes.append((
+                min(wx) * scale, min(wy) * scale,
+                max(wx) * scale, max(wy) * scale,
+            ))
+        return boxes
+
+    # 回退：行内等宽。OCR 未给词框（旧行为），或词框数与字符数不一致
+    # （少数行会为空格额外产出词框，贸然对齐会把整行文字错位）。
+    step = (x1 - x0) / n
+    return [
+        (x0 + step * i, y0, x0 + step * (i + 1), y1)
+        for i in range(n)
+    ]
+
 
 @dataclass
 class OcrPageResult:
@@ -58,8 +123,8 @@ class OcrPageResult:
         """序列化为 JSON，供 Redis 缓存。
 
         **为什么缓存整个结果而非只缓存文本**：前端高亮依赖 `char_boxes`
-        （OCR 不提供字符级坐标，这些框是等宽切分算出来的）。只缓存文本
-        会让二次命中退化为"有文字、无坐标"，高亮全丢。
+        （OCR 的字符级框，逐字坐标）。只缓存文本会让二次命中退化为
+        "有文字、无坐标"，高亮全丢。
         """
         return json.dumps({
             "page_no": self.page_no,
@@ -116,7 +181,8 @@ class OcrEngine:
 
         每页渲染为位图后识别；坐标乘 `_scale` 换算为 PDF point。
 
-        `file_hash` 非空时按 `ocr:{hash}:{page}` 读写 Redis 缓存：
+        `file_hash` 非空时按 `ocr:v{ver}:{hash}:{page}` 读写 Redis 缓存
+        （键含坐标算法版本，见 `redis_client.OCR_CACHE_VERSION`）：
         本地 CPU 单页约 6s，同一文件重复上传/重试不必重跑（架构 §10.2）。
         缓存读写失败只记警告，**不影响 OCR 本身**。
         """
@@ -144,7 +210,11 @@ class OcrEngine:
         img_bytes = pix.tobytes("png")
 
         engine = self._get_engine()
-        raw_result, _ = engine(img_bytes)
+        # ⚠️ `return_word_box` 必须**在调用点**传：RapidOCR.__call__ 只在收到
+        # kwargs 时才读取它，放 `__init__` 会被静默忽略（实测 item 长度仍是 3）。
+        # 传 kwargs 会一并重置 box_thresh/unclip_ratio/text_score 为 RapidOCR
+        # 的默认值（0.5/1.6/0.5）——与自带 config.yaml 的默认值一致，行为不变。
+        raw_result, _ = engine(img_bytes, return_word_box=RETURN_WORD_BOX)
 
         page_no = page.number + 1
         page_w = float(page.rect.width)
@@ -162,11 +232,13 @@ class OcrEngine:
         confidences: list[float] = []
 
         for item in raw_result:
-            # RapidOCR 返回 [box, text, score]；box 是 4 点多边形 [[x,y], ...]
+            # RapidOCR 返回 [行框, 文本, 置信度, 字符框, 字符, 逐字置信度]；
+            # 行框是 4 点多边形 [[x,y], ...]
             box, text, score = item[0], item[1], float(item[2])
             confidences.append(score)
             if not text:
                 continue
+
             # 该行文本的外接矩形（像素），换算到 PDF point
             xs = [p[0] for p in box]
             ys = [p[1] for p in box]
@@ -175,21 +247,14 @@ class OcrEngine:
             x1 = max(xs) * self._scale
             y1 = max(ys) * self._scale
 
-            # OCR 不提供字符级坐标，按等宽把行框切分给各字符。
-            # 这是**近似**：前端对 OCR 来源的高亮会标"识别定位，可能有偏差"。
-            n = len(text)
-            if n == 0:
-                continue
-            step = (x1 - x0) / n
-            for i, c in enumerate(text):
+            # 字符框：优先用 OCR 的字/词框，拿不到才回退等宽（见 _split_line_box）
+            word_boxes = item[_ITEM_WORD_BOX] if len(item) > _ITEM_WORD_BOX else None
+            line_boxes = _split_line_box(text, x0, y0, x1, y1, word_boxes, self._scale)
+
+            for c, (bx0, by0, bx1, by1) in zip(text, line_boxes):
                 chars.append(c)
                 boxes.append(CharBox(
-                    char=c,
-                    x0=x0 + step * i,
-                    y0=y0,
-                    x1=x0 + step * (i + 1),
-                    y1=y1,
-                    page_no=page_no,
+                    char=c, x0=bx0, y0=by0, x1=bx1, y1=by1, page_no=page_no,
                 ))
             chars.append("\n")
             boxes.append(CharBox(char="\n", x0=x1, y0=y0, x1=x1, y1=y1, page_no=page_no))

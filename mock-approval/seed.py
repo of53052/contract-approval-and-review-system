@@ -78,6 +78,22 @@ TODOS: list[dict] = [
     },
     {
         "approval_no": "AP-2026-0003",
+        "title": "技术服务合同（高风险样本）",
+        "applicant": "赵六",
+        "applicant_dept": "研发管理部",
+        "business_type": "service",
+        "counterparty": "某某软件服务有限公司",
+        "status": "pending",
+        "attachments": [
+            {
+                "attachment_id": "att1",
+                "file_name": "技术服务合同-高风险样本.docx",
+                "sample_path": "service/技术服务合同-高风险样本.docx",
+            },
+        ],
+    },
+    {
+        "approval_no": "AP-2026-0004",
         "title": "劳动合同（高风险样本）",
         "applicant": "王五",
         "applicant_dept": "人力资源部",
