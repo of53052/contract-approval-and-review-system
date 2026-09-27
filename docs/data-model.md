@@ -106,7 +106,7 @@
 |---|---|---|---|
 | `RiskLevel` | `high` | 高风险 | 最高优先级 |
 | | `medium` | 中风险 | — |
-| | `low` | 低风险 | — |
+| | `low` | 低风险 | 当前规则集不产出（见 §3.2 注） |
 | `RiskCategory` | `subject_qualification` | 主体资质 | — |
 | | `amount_payment` | 金额支付 | — |
 | | `liability` | 违约责任 | — |
@@ -124,6 +124,15 @@
 | `ReviewConclusion` | `pass` | 通过 | 无风险或仅低风险 |
 | | `rectify` | 建议整改 | 存在中风险 |
 | | `reject` | 建议拒绝 | 存在高风险 |
+
+> **关于 `low`（低风险）**：枚举、UI 标签、报告配色与统计列都已支持三级，
+> 但**当前种子规则集（45 条）只产出 `high` / `medium`**——没有一条规则判 `low`，
+> LLM 的 Mock Provider 也只产出这两级。因此 `low` 分支在真实数据下**从未被走通**，
+> 5 份样本的 `expected_overall` 均为 `high`。
+> 这是**有意接受的现状**：PRD 只要求"风险等级分为三级"，未要求每级都必须有样本；
+> 补一条 `low` 规则需要同时定义"什么算低风险"的判据，属需求扩张，不在当前范围。
+> 若将来接入真实 LLM（`LLM_PROVIDER=openai_compat`），其产出可能包含 `low`，
+> 届时该分支需补回归用例。
 
 ### 3.3 条款与解析
 

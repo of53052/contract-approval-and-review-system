@@ -130,7 +130,7 @@ pending
 | `keyword` | `config.keywords`（+ `match_all`） | `contains` |
 | `regex` | `config.pattern` | `regex` |
 | `blacklist` | `config.blacklist` 条目 | `contains` / `regex` |
-| `presence` | `config.required_pattern`，或 `within_clause_type` 内必须有该模式 | `not_exists`（`exists` 作为前置守卫亦接受） |
+| `presence` | `config.required_clause_type`（某类条款必须存在）、`config.required_keys`（某键必须提取到）、`config.required_pattern`（全文或 `within_clause_type` 内必须有该模式） | `not_exists`（`exists` 作为前置守卫亦接受） |
 | `threshold` | 按 `metric` 分派，见下表 | 无（`exists` 前置守卫接受） |
 
 **`threshold` 的四种 metric**（批次 9 起）：
@@ -156,6 +156,18 @@ pending
 写入时按规则类型校验条件运算符是否真被引擎读取——不在 `_READ_CONDITION_OPS`
 且不属于 `_UNIVERSAL_CONDITION_OPS` 的一律 400。目的是让"规则已启用却从不命中"
 在保存时暴露，而不是等审查漏报后才被发现。
+
+**`presence` 的两种缺失语义不可混用**（批次 13 踩到）：
+
+| 想判的事 | 正确写法 | 错误写法 |
+|---|---|---|
+| 某类条款**根本不存在** | `required_clause_type` | ❌ `within_clause_type` + `required_pattern` |
+| 该类条款存在，但正文**没写某个模式** | `within_clause_type` + `required_pattern` | — |
+
+`within + required_pattern` 的判定是 `if targets and not any(...)`
+（见 `rule_engine._apply_presence`）——**`targets` 为空时判定不成立、不会报**。
+用它写"未约定数据安全义务"，会得到一条永不命中的规则：
+合同有数据安全条款时 `required_pattern` 命中，没有时 `targets` 为空也不报。
 
 ### 4.3 锚点：四级降级（`anchor_builder.locate`）
 

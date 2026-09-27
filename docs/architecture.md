@@ -1741,6 +1741,55 @@ pytest                          → 125 passed, 1 skipped
   tsc --noEmit / vite build exit 0
 ```
 
+#### 18.2.9 阶段二·批次 13（已交付：补齐数据安全维度规则）
+
+**背景**：PRD 2.4.4 点名要切分"…保密义务、**数据安全**、争议解决管辖等法定与业务条款"，
+`ClauseType.DATA_SECURITY` / `RiskCategory.DATA_SECURITY` 与示范条款
+「数据安全与个人信息保护」都已就位，但**规则库里 `category='data_security'` 为 0 条**——
+该维度定义完整却从不产出任何风险，属"纸面能力"。
+
+**改动**（只加规则，不动引擎）
+
+| 项 | 内容 |
+|---|---|
+| 新增规则 | `DATA_SECURITY_MISSING`、`PERSONAL_INFO_UNPROTECTED`（各 medium） |
+| 挂载 | 采购 / 销售 / 服务三类模板（劳动合同不涉及数据处理，不挂） |
+| 位置 | `scripts/seed_data.py`，规则总数 39 → **45** |
+
+两条规则**语义不重叠**，分别管"有没有"与"够不够"：
+
+| 规则 | 判据 | 命中条件 |
+|---|---|---|
+| `DATA_SECURITY_MISSING` | `required_clause_type: [data_security]` | 合同**没有**数据安全条款 |
+| `PERSONAL_INFO_UNPROTECTED` | `within_clause_type: data_security` + `required_pattern: 个人信息` | **有**该条款但没提个人信息 |
+
+**踩到的坑（写错会得到一条永不命中的规则）**：最初两条都写成
+`within_clause_type + required_pattern`，但该分支的判定是
+`if targets and not any(...)`——**`targets` 为空时判定不成立、不会报**。
+合同有条款时 `required_pattern` 命中（不报），没有条款时 `targets` 为空（也不报），
+规则永远不会触发。"某类条款必须存在"只能由 `required_clause_type` 表达。
+已把这条差异写入 `review-engine.md` §4.2 的对照表。
+
+**实测**（`RuleEngine` 直接喂 4 种文档形态）
+
+```
+A 无数据安全条款                -> DATA_SECURITY_MISSING      ✓
+B 有条款但未提数据安全/个人信息      -> PERSONAL_INFO_UNPROTECTED  ✓
+C 提了数据安全，未提个人信息        -> PERSONAL_INFO_UNPROTECTED  ✓
+D 两者都提                     -> 无命中                       ✓
+```
+
+端到端（服务合同 #1456）：风险清单由 7 项变 8 项，新增
+`[medium] 未约定数据安全义务 cat=data_security`，`unanchored=True`
+（条款不存在则无原文可锚，与"缺少必备条款"类风险行为一致，UI 显示"未锚定"标签）。
+
+回归：`pytest` 125 passed 1 skipped；`check_consistency` C1~C8 全绿；
+`run_tests` 5/5（新风险被标为"额外识别 1 项，不计入失败"——断言集只做正向匹配，
+不把"多识别"判为失败）。
+
+**低风险等级的决策**：核查发现 `low` 分支从未被真实数据走通（规则集只产
+`high`/`medium`）。经确认**接受现状**，理由与影响已写入 `data-model.md` §3.2。
+
 ---
 
 ## 19. 风险登记册

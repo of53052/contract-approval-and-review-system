@@ -258,6 +258,49 @@ _PURCHASE_RULES: list[dict] = [
         "suggestion_template": "建议明确约定合同币种（如人民币 CNY）。",
         "conditions": [_c("metadata.currency", RuleOperator.EXISTS, None)],
     },
+    # ---- 数据安全（PRD 2.4.4 点名的条款维度）----
+    # 两条规则**语义不重叠**，分别管"有没有"与"够不够"：
+    #   ① DATA_SECURITY_MISSING     —— 合同根本没有数据安全条款（条款级缺失）
+    #   ② PERSONAL_INFO_UNPROTECTED —— 有数据安全条款但没写个人信息保护（内容级缺失）
+    #
+    # ⚠️ 为什么 ① 用 `required_clause_type` 而不是 `within_clause_type`：
+    # `within + required_pattern` 的判定是"该类条款**存在**时，其正文必须含某模式"
+    # （见 rule_engine._apply_presence 的 `if targets and not any(...)`）——
+    # 条款压根不存在时 `targets` 为空，**判定不成立、不会报**。
+    # 用它写"未约定数据安全义务"会得到一条永不命中的规则。
+    # "某类条款必须存在"只能由 `required_clause_type` 表达。
+    {
+        "code": "DATA_SECURITY_MISSING",
+        "name": "未约定数据安全义务",
+        "category": RiskCategory.DATA_SECURITY,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        "config": {"required_clause_type": [ClauseType.DATA_SECURITY.value]},
+        "result_template": "合同未约定数据安全保护义务，数据泄露时的责任边界不清晰。",
+        "suggestion_template": "建议约定：乙方处理甲方数据应遵守《数据安全法》，"
+                               "不得超出授权范围处理或向第三方提供。",
+        # 该条款类型缺失时没有原文可锚，风险项会被标记 unanchored，
+        # 与"缺少必备条款"类风险（pipeline._append_global_missing）行为一致。
+        "conditions": [],
+    },
+    {
+        "code": "PERSONAL_INFO_UNPROTECTED",
+        "name": "未约定个人信息保护",
+        "category": RiskCategory.DATA_SECURITY,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        # ② 才用 within + pattern：语义是"数据安全条款里必须提到个人信息"。
+        # 合同没有数据安全条款时由 ① 报，这里不重复报同一事实。
+        "config": {
+            "within_clause_type": ClauseType.DATA_SECURITY.value,
+            "required_pattern": "个人信息",
+        },
+        "result_template": "数据安全条款未涵盖个人信息保护，"
+                           "违反《个人信息保护法》的合规风险由我方承担。",
+        "suggestion_template": "建议约定：涉及个人信息的处理应取得合法授权，"
+                               "并在服务结束后按甲方要求删除或返还。",
+        "conditions": [],
+    },
 ]
 
 
@@ -361,6 +404,49 @@ _SALES_RULES: list[dict] = [
         "config": {"required_pattern": "日内通知"},
         "result_template": "不可抗力条款未约定通知时效，事后举证易生争议。",
         "suggestion_template": "建议约定：受影响方应在不可抗力发生后 15 日内书面通知对方。",
+        "conditions": [],
+    },
+    # ---- 数据安全（PRD 2.4.4 点名的条款维度）----
+    # 两条规则**语义不重叠**，分别管"有没有"与"够不够"：
+    #   ① DATA_SECURITY_MISSING     —— 合同根本没有数据安全条款（条款级缺失）
+    #   ② PERSONAL_INFO_UNPROTECTED —— 有数据安全条款但没写个人信息保护（内容级缺失）
+    #
+    # ⚠️ 为什么 ① 用 `required_clause_type` 而不是 `within_clause_type`：
+    # `within + required_pattern` 的判定是"该类条款**存在**时，其正文必须含某模式"
+    # （见 rule_engine._apply_presence 的 `if targets and not any(...)`）——
+    # 条款压根不存在时 `targets` 为空，**判定不成立、不会报**。
+    # 用它写"未约定数据安全义务"会得到一条永不命中的规则。
+    # "某类条款必须存在"只能由 `required_clause_type` 表达。
+    {
+        "code": "DATA_SECURITY_MISSING",
+        "name": "未约定数据安全义务",
+        "category": RiskCategory.DATA_SECURITY,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        "config": {"required_clause_type": [ClauseType.DATA_SECURITY.value]},
+        "result_template": "合同未约定数据安全保护义务，数据泄露时的责任边界不清晰。",
+        "suggestion_template": "建议约定：乙方处理甲方数据应遵守《数据安全法》，"
+                               "不得超出授权范围处理或向第三方提供。",
+        # 该条款类型缺失时没有原文可锚，风险项会被标记 unanchored，
+        # 与"缺少必备条款"类风险（pipeline._append_global_missing）行为一致。
+        "conditions": [],
+    },
+    {
+        "code": "PERSONAL_INFO_UNPROTECTED",
+        "name": "未约定个人信息保护",
+        "category": RiskCategory.DATA_SECURITY,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        # ② 才用 within + pattern：语义是"数据安全条款里必须提到个人信息"。
+        # 合同没有数据安全条款时由 ① 报，这里不重复报同一事实。
+        "config": {
+            "within_clause_type": ClauseType.DATA_SECURITY.value,
+            "required_pattern": "个人信息",
+        },
+        "result_template": "数据安全条款未涵盖个人信息保护，"
+                           "违反《个人信息保护法》的合规风险由我方承担。",
+        "suggestion_template": "建议约定：涉及个人信息的处理应取得合法授权，"
+                               "并在服务结束后按甲方要求删除或返还。",
         "conditions": [],
     },
 ]
@@ -636,6 +722,49 @@ _SERVICE_RULES: list[dict] = [
         "result_template": "未明确币种，涉外场景下金额存在歧义。",
         "suggestion_template": "建议明确约定合同币种（如人民币 CNY）。",
         "conditions": [_c("metadata.currency", RuleOperator.EXISTS, None)],
+    },
+    # ---- 数据安全（PRD 2.4.4 点名的条款维度）----
+    # 两条规则**语义不重叠**，分别管"有没有"与"够不够"：
+    #   ① DATA_SECURITY_MISSING     —— 合同根本没有数据安全条款（条款级缺失）
+    #   ② PERSONAL_INFO_UNPROTECTED —— 有数据安全条款但没写个人信息保护（内容级缺失）
+    #
+    # ⚠️ 为什么 ① 用 `required_clause_type` 而不是 `within_clause_type`：
+    # `within + required_pattern` 的判定是"该类条款**存在**时，其正文必须含某模式"
+    # （见 rule_engine._apply_presence 的 `if targets and not any(...)`）——
+    # 条款压根不存在时 `targets` 为空，**判定不成立、不会报**。
+    # 用它写"未约定数据安全义务"会得到一条永不命中的规则。
+    # "某类条款必须存在"只能由 `required_clause_type` 表达。
+    {
+        "code": "DATA_SECURITY_MISSING",
+        "name": "未约定数据安全义务",
+        "category": RiskCategory.DATA_SECURITY,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        "config": {"required_clause_type": [ClauseType.DATA_SECURITY.value]},
+        "result_template": "合同未约定数据安全保护义务，数据泄露时的责任边界不清晰。",
+        "suggestion_template": "建议约定：乙方处理甲方数据应遵守《数据安全法》，"
+                               "不得超出授权范围处理或向第三方提供。",
+        # 该条款类型缺失时没有原文可锚，风险项会被标记 unanchored，
+        # 与"缺少必备条款"类风险（pipeline._append_global_missing）行为一致。
+        "conditions": [],
+    },
+    {
+        "code": "PERSONAL_INFO_UNPROTECTED",
+        "name": "未约定个人信息保护",
+        "category": RiskCategory.DATA_SECURITY,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        # ② 才用 within + pattern：语义是"数据安全条款里必须提到个人信息"。
+        # 合同没有数据安全条款时由 ① 报，这里不重复报同一事实。
+        "config": {
+            "within_clause_type": ClauseType.DATA_SECURITY.value,
+            "required_pattern": "个人信息",
+        },
+        "result_template": "数据安全条款未涵盖个人信息保护，"
+                           "违反《个人信息保护法》的合规风险由我方承担。",
+        "suggestion_template": "建议约定：涉及个人信息的处理应取得合法授权，"
+                               "并在服务结束后按甲方要求删除或返还。",
+        "conditions": [],
     },
 ]
 
