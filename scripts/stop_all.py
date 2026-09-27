@@ -21,9 +21,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+def _force_utf8(*streams) -> None:
+    """把输出流切到 UTF-8。
+
+    Windows 控制台默认代码页是 GBK（936），直接打印中文或 ✓/✗ 会抛
+    UnicodeEncodeError。用 `getattr` 取 `reconfigure` 而非直接属性访问：
+    它是 CPython `TextIOWrapper` 的扩展方法，静态类型（`TextIO`）里没有声明，
+    直接写 `sys.stderr.reconfigure(...)` 会触发 Pylance
+    `reportAttributeAccessIssue`（stdout 因 `hasattr` 收窄才侥幸不报）。
+    """
+
+    for stream in streams:
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+_force_utf8(sys.stdout, sys.stderr)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUN_DIR = PROJECT_ROOT / ".run"
@@ -63,12 +77,21 @@ def port_open(port: int) -> bool:
 
 
 def pid_alive(pid: int) -> bool:
-    """Windows 下用 tasklist 判断进程是否存在。"""
+    """判断进程是否存在。
+
+    用 `/FO CSV` 而非默认表格输出：默认输出的"无匹配进程"提示语随系统语言变化
+    （中文是"信息: 没有运行的任务匹配指定标准。"），靠子串匹配不可靠；
+    CSV 下无匹配时只有提示行、有匹配时第二列是 PID，解析结果与语言无关。
+    """
     r = subprocess.run(
-        ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+        ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
-    return str(pid) in (r.stdout or "")
+    for line in (r.stdout or "").splitlines():
+        fields = [f.strip().strip('"') for f in line.split(",")]
+        if len(fields) >= 2 and fields[1] == str(pid):
+            return True
+    return False
 
 
 def command_line_of(pid: int) -> str:
@@ -100,6 +123,18 @@ def pid_on_port(port: int) -> int | None:
     return None
 
 
+def verify_owner(pid: int, markers: tuple[str, ...]) -> tuple[bool, str]:
+    """校验 PID 是否确属本项目服务，返回 (是否归属, 命令行)。
+
+    必要性：`.run/*.json` 是上次运行留下的记录，其中的 PID 可能已被系统
+    复用给**无关进程**（实测构造过该场景：记录里的 PID 变成另一个 python
+    进程，脚本照杀不误）。因此记录路径也必须做归属校验，不能只凭"PID 存在"。
+    """
+    cmd = command_line_of(pid)
+    missing = [m for m in markers if m.lower() not in cmd.lower()]
+    return (not missing), cmd
+
+
 def kill_tree(pid: int) -> None:
     """终止进程树。vite/uvicorn 会派生子进程，必须连子进程一起收。"""
     subprocess.run(
@@ -113,12 +148,20 @@ def stop_service(name: str, port: int, markers: tuple[str, ...], state: dict) ->
     rec = state.get(name)
     pid = rec.get("pid") if rec else None
 
+    # ① 优先用记录里的 PID，但必须校验归属（PID 可能已被复用）
     if pid is not None and pid_alive(pid):
-        kill_tree(pid)
-        ok(f"{name} 已停止 (pid={pid})")
-        return True
+        owned, cmd = verify_owner(pid, markers)
+        if owned:
+            kill_tree(pid)
+            ok(f"{name} 已停止 (pid={pid})")
+            return True
+        warn(
+            f"{name}: 记录中的 pid={pid} 命令行不含 {markers}，"
+            "判定为已被复用的无关进程，**不终止**"
+        )
+        warn(f"  命令行: {cmd[:160]}")
 
-    # 记录缺失或进程已消失：若端口仍被占用，按端口反查并校验归属
+    # ② 记录缺失 / 进程已消失 / 记录不可信：按端口反查并校验归属
     if not port_open(port):
         if rec:
             ok(f"{name} 已不在运行")
@@ -130,11 +173,10 @@ def stop_service(name: str, port: int, markers: tuple[str, ...], state: dict) ->
     if fallback is None:
         warn(f"{name}: 端口 {port} 被占用但无法定位 PID，请手动处理")
         return False
-    cmd = command_line_of(fallback)
-    missing = [m for m in markers if m.lower() not in cmd.lower()]
-    if missing:
+    owned, cmd = verify_owner(fallback, markers)
+    if not owned:
         warn(
-            f"{name}: 端口 {port} 的占用进程 (pid={fallback}) 命令行缺少标记 {missing}，"
+            f"{name}: 端口 {port} 的占用进程 (pid={fallback}) 命令行不含 {markers}，"
             "判定为无关进程，**不终止**"
         )
         warn(f"  命令行: {cmd[:160]}")

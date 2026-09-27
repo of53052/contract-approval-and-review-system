@@ -17,10 +17,23 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-if hasattr(sys.stdout, "reconfigure"):
-    # 控制台默认 GBK，中文与 ✓ 会 UnicodeEncodeError
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+def _force_utf8(*streams) -> None:
+    """把输出流切到 UTF-8。
+
+    Windows 控制台默认代码页是 GBK（936），直接打印中文或 ✓/✗ 会抛
+    UnicodeEncodeError。用 `getattr` 取 `reconfigure` 而非直接属性访问：
+    它是 CPython `TextIOWrapper` 的扩展方法，静态类型（`TextIO`）里没有声明，
+    直接写 `sys.stderr.reconfigure(...)` 会触发 Pylance
+    `reportAttributeAccessIssue`（stdout 因 `hasattr` 收窄才侥幸不报）。
+    """
+
+    for stream in streams:
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+_force_utf8(sys.stdout, sys.stderr)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(__file__).resolve().parent / "data"
