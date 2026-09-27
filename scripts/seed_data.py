@@ -113,10 +113,19 @@ RULES: list[dict] = [
         "category": RiskCategory.ACCEPTANCE,
         "risk_level": RiskLevel.HIGH,
         "rule_type": RuleType.PRESENCE,
-        "config": {"required_clause_type": ClauseType.ACCEPTANCE.value},
+        # 语义是"付款条款内必须提到验收"，而非"合同要有验收条款"。
+        # 两者不等价：实测样本同时有「验收标准」与「到货即付全款」，
+        # 用后者判定会漏报（见 rule_engine._apply_presence 的说明）。
+        "config": {
+            "within_clause_type": ClauseType.PAYMENT.value,
+            "required_pattern": "验收",
+        },
         "result_template": "付款条款未以验收为前置条件，存在先付款后验收风险。",
         "suggestion_template": "建议约定：甲方验收合格并出具验收单后，方支付相应款项。",
-        "conditions": [_c("clause.clause_type", RuleOperator.NOT_EXISTS, None)],
+        # 条件表达式描述"付款条款内必须提到验收"，与 config 保持一致
+        "conditions": [
+            _c("clause.payment.content", RuleOperator.NOT_CONTAINS, "验收"),
+        ],
     },
     {
         "code": "IP_TRANSFER_ALL",
@@ -124,8 +133,13 @@ RULES: list[dict] = [
         "category": RiskCategory.INTELLECTUAL_PROPERTY,
         "risk_level": RiskLevel.HIGH,
         "rule_type": RuleType.KEYWORD,
-        "config": {"keywords": ["知识产权归对方所有", "知识产权归甲方所有", "全部知识产权归",
-                                "所有权归供应商", "所有权归乙方"], "match_all": False},
+        # 关键词需覆盖真实合同里的多种表述（"归供应商所有""所有权归乙方"等）。
+        # 实测教训：只写"知识产权归对方所有"会漏掉"归供应商所有"这类同义写法。
+        "config": {"keywords": [
+            "知识产权归供应商所有", "知识产权归乙方所有", "知识产权归对方所有",
+            "知识产权归甲方所有", "全部知识产权归", "知识产权均归",
+            "所有权归供应商", "所有权归乙方", "成果归供应商",
+        ], "match_all": False},
         "result_template": "知识产权归属约定不利于我方，可能丧失核心成果所有权。",
         "suggestion_template": "建议约定：本项目产生的知识产权归我方所有，对方仅享有使用权。",
         "conditions": [_c("clause.content", RuleOperator.REGEX,
