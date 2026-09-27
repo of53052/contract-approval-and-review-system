@@ -5,6 +5,7 @@ import type {
   Clause,
   ContractDetail,
   ContractListItem,
+  Page,
   ExportRecord,
   ReportPreview,
   RiskItem,
@@ -14,11 +15,13 @@ import type {
   WritebackStatusOut,
 } from "../types";
 
+/** 合同列表。**返回分页信封**（后端 `Page[ContractListItem]`），不是裸数组。 */
 export const listContracts = async (params: {
   status?: string;
   risk_level?: string;
-  limit?: number;
-}): Promise<ContractListItem[]> =>
+  page?: number;
+  page_size?: number;
+}): Promise<Page<ContractListItem>> =>
   (await api.get("/api/contracts", { params })).data;
 
 export const getContract = async (id: number): Promise<ContractDetail> =>

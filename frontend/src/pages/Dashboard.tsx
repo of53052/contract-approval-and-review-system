@@ -56,7 +56,7 @@ export default function Dashboard() {
     queryFn: () => listContracts({ status, risk_level: riskLevel }),
     // 有任务在解析/审查中时每 3 秒轮询，全部完成则停止轮询
     refetchInterval: (q) => {
-      const rows = q.state.data as ContractListItem[] | undefined;
+      const rows = q.state.data?.items;
       const busy = rows?.some((r) => r.status === "parsing" || r.status === "reviewing");
       return busy ? 3000 : false;
     },
@@ -248,7 +248,7 @@ export default function Dashboard() {
     },
   ];
 
-  const rows = (data ?? []).filter(
+  const rows = (data?.items ?? []).filter(
     (r) => !keyword || r.title.includes(keyword) || (r.contract_no ?? "").includes(keyword),
   );
 

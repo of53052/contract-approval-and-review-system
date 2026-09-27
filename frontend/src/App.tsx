@@ -1,5 +1,6 @@
 import { Layout, Typography } from "antd";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import ErrorBoundary from "./components/ErrorBoundary";
 import Dashboard from "./pages/Dashboard";
 import Workbench from "./pages/Workbench";
 
@@ -31,11 +32,14 @@ export default function App() {
         </Typography.Text>
       </Header>
       <Content style={{ background: "#f5f6f8" }}>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/contracts/:id" element={<Workbench />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        {/* 兜住渲染期异常，避免整页白屏且无任何提示 */}
+        <ErrorBoundary>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/contracts/:id" element={<Workbench />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </ErrorBoundary>
       </Content>
     </Layout>
   );

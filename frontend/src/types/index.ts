@@ -5,6 +5,14 @@
  * 后端字段改名时前端会编译报错，这正是我们要的（架构 §14.2 类型安全）。
  */
 
+/** 后端分页信封（app/schemas/common.py 的 Page[T]）。 */
+export interface Page<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export type RiskLevel = "high" | "medium" | "low";
 export type TaskStatus =
   | "pending" | "parsing" | "reviewing" | "completed" | "blocked" | "failed";
