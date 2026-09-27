@@ -8,14 +8,27 @@
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import MetaData, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
 
+# 约束命名约定：让 Alembic 自动生成的约束名可预测、跨环境稳定，
+# 避免"同名约束在不同库上名字不同"导致的迁移漂移。
+# 命名风格遵循 docs/data-model.md §1.1（idx_ / uk_ / fk_）。
+NAMING_CONVENTION = {
+    "ix": "idx_%(table_name)s_%(column_0_N_name)s",
+    "uq": "uk_%(table_name)s_%(column_0_N_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_N_name)s",
+    "pk": "pk_%(table_name)s",
+}
+
 
 class Base(DeclarativeBase):
     """所有 ORM 模型的基类。"""
+
+    metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
 
 engine = create_engine(

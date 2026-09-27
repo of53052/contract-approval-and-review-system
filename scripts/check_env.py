@@ -137,6 +137,86 @@ def check_minio() -> bool:
     return True
 
 
+def check_schema() -> tuple[bool, list[str]]:
+    """数据层检查：迁移版本是否到位、种子数据是否写入。"""
+    section("数据层")
+    warnings: list[str] = []
+
+    try:
+        from sqlalchemy import inspect, text
+        from app.core.database import engine
+    except Exception as exc:  # noqa: BLE001
+        fail(f"导入失败: {exc}")
+        return False, warnings
+
+    try:
+        insp = inspect(engine)
+        tables = set(insp.get_table_names())
+    except Exception as exc:  # noqa: BLE001
+        fail(f"读取表清单失败: {exc}")
+        return False, warnings
+
+    from app.models import TABLE_ORDER
+
+    missing = [t for t in TABLE_ORDER if t not in tables]
+    if missing:
+        fail(f"缺少表: {missing}")
+        warn("请执行: cd backend && python -m alembic upgrade head")
+        return False, warnings
+    ok(f"18 张表齐备（含 alembic_version 共 {len(tables)} 张）")
+
+    # 迁移版本：对比 head 与当前
+    try:
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+        from alembic.runtime.migration import MigrationContext
+
+        backend_dir = PROJECT_ROOT / "backend"
+        cfg = Config(str(backend_dir / "alembic.ini"))
+        cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+        head = ScriptDirectory.from_config(cfg).get_current_head()
+
+        with engine.connect() as conn:
+            current = MigrationContext.configure(conn).get_current_revision()
+
+        if current == head:
+            ok(f"迁移版本已是最新: {head}")
+        else:
+            fail(f"迁移版本落后: 当前={current} head={head}")
+            warn("请执行: cd backend && python -m alembic upgrade head")
+            return False, warnings
+    except Exception as exc:  # noqa: BLE001
+        warn(f"迁移版本检查跳过: {type(exc).__name__}: {exc}")
+        warnings.append("迁移版本未校验")
+        return True, warnings
+
+    # 种子数据
+    try:
+        from app.core.database import SessionLocal
+        from app.models import Rule, RuleTemplate, StandardClause, SubjectBlacklist
+
+        with SessionLocal() as db:
+            counts = {
+                "规则模板": db.query(RuleTemplate).count(),
+                "规则": db.query(Rule).count(),
+                "标准条款": db.query(StandardClause).count(),
+                "黑名单": db.query(SubjectBlacklist).count(),
+            }
+        empty = [k for k, v in counts.items() if v == 0]
+        detail = " | ".join(f"{k}={v}" for k, v in counts.items())
+        if empty:
+            warn(f"种子数据未写入: {detail}")
+            warn("请执行: python scripts/seed_data.py")
+            warnings.append(f"种子数据缺失: {empty}")
+        else:
+            ok(f"种子数据: {detail}")
+    except Exception as exc:  # noqa: BLE001
+        warn(f"种子数据检查失败: {type(exc).__name__}: {exc}")
+        warnings.append("种子数据未校验")
+
+    return True, warnings
+
+
 def check_host_capabilities() -> tuple[bool, list[str]]:
     """宿主能力检查：WPS COM / PyMuPDF / RapidOCR。"""
     section("宿主能力")
@@ -295,6 +375,10 @@ def main() -> int:
     results["MySQL"] = check_mysql()
     results["Redis"] = check_redis()
     results["MinIO"] = check_minio()
+
+    passed, warns = check_schema()
+    results["数据层"] = passed
+    all_warnings.extend(warns)
 
     passed, warns = check_host_capabilities()
     results["宿主能力"] = passed
