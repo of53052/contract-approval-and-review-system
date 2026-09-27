@@ -7,11 +7,14 @@
 四条路径：
     DOCX                → WPS COM 导出 PDF → PyMuPDF 提取
     文本型 PDF          → PyMuPDF 直接提取
-    扫描件 PDF / 图片   → PyMuPDF 渲染 + RapidOCR（**阶段一不启用**）
+    扫描件 PDF / 图片   → PyMuPDF 渲染 + RapidOCR（批次 8 起启用，见 `OCR_ENABLED`）
 
 超时策略（§7.3）：
     timeout = base_timeout + per_page_timeout × page_count
     本地 CPU OCR 为分钟级，阈值不能写死。
+
+⚠️ `compute_timeout()` 目前**无生产调用点**（仅测试引用）。COM 调用无法安全中断，
+   超时只能事后标记，接线方案待决策（架构 R11）。
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ from app.core.config import settings
 from app.models.enums import BlockedReason, FileFormat, ParseMethod, ParseStatus
 from app.services.parsing.anchor_builder import AnchorBuilder
 from app.services.parsing.docx_converter import convert_docx
-from app.services.parsing.ocr_engine import OcrEngine, is_blank_page
+from app.services.parsing.ocr_engine import OcrEngine, build_ocr_blocks, is_blank_page
 from app.services.parsing.pdf_extractor import EncryptedPdfError, extract_pdf
 from app.services.parsing.types import DocumentText
 
@@ -66,7 +69,8 @@ class ParseOutcome:
     error_detail: str | None = None
     #: 解析过程中的降级/异常说明，供日志与排查
     notes: list[str] = field(default_factory=list)
-    #: DOCX 转换后的 PDF 字节。仅 DOCX 路径非空，供流水线上传 MinIO 供前端渲染。
+    #: 前端渲染用的 PDF 字节，供流水线上传 MinIO 登记 `pdf_object_key`。
+    #: DOCX 路径放 WPS COM 转换产物；图片路径放"包成的单页 PDF"（PDF.js 渲染不了图片）。
     #: 原生 PDF / 扫描件不需要转换，前端直接用原件渲染，此处保持 None。
     pdf_bytes: bytes | None = None
 
@@ -104,29 +108,38 @@ def parse_document(
     path: str | Path,
     *,
     original_name: str | None = None,
-    allow_ocr: bool = False,
+    allow_ocr: bool | None = None,
+    file_hash: str | None = None,
 ) -> ParseOutcome:
     """解析文档，返回统一的段落树与锚点数据源。
 
-    `allow_ocr=False`（阶段一默认）时，扫描件直接抛 `ParseBlocked`，
-    因为阶段一明确不做 OCR 链路（docs/architecture.md §18.1）。
+    `allow_ocr` 为 None 时取 `.env` 的 `OCR_ENABLED`（默认 true，PRD 2.4.10
+    要求支持扫描件）。置 false 时扫描件与图片直接抛 `ParseBlocked`，
+    便于在无 OCR 依赖的环境降级。
+
+    `file_hash` 用于 OCR 结果缓存（同一文件重复解析直接命中，省 6s/页）。
     """
     path = Path(path)
+    if allow_ocr is None:
+        allow_ocr = settings.ocr_enabled
     fmt = detect_format(path)
-    logger.info("开始解析: %s（格式 %s）", original_name or path.name, fmt.value)
+    logger.info("开始解析: %s（格式 %s，OCR %s）",
+                original_name or path.name, fmt.value, "启用" if allow_ocr else "关闭")
 
     if fmt == FileFormat.DOCX:
         return _parse_docx(path, allow_ocr=allow_ocr)
     if fmt == FileFormat.PDF:
-        return _parse_pdf(path, allow_ocr=allow_ocr)
+        return _parse_pdf(path, allow_ocr=allow_ocr, file_hash=file_hash)
     if fmt == FileFormat.IMAGE:
-        return _parse_image(path, allow_ocr=allow_ocr)
+        return _parse_image(path, allow_ocr=allow_ocr, file_hash=file_hash)
     raise ValueError(f"未处理格式: {fmt}")
 
 
 # ==================== 各路径实现 ====================
 
-def _parse_pdf(path: Path, *, allow_ocr: bool) -> ParseOutcome:
+def _parse_pdf(
+    path: Path, *, allow_ocr: bool, file_hash: str | None = None
+) -> ParseOutcome:
     """文本型 PDF 路径。"""
     t0 = time.perf_counter()
 
@@ -140,9 +153,9 @@ def _parse_pdf(path: Path, *, allow_ocr: bool) -> ParseOutcome:
         if not allow_ocr:
             raise ParseBlocked(
                 BlockedReason.EMPTY_CONTENT,
-                f"{result.scan_reason}；阶段一未启用 OCR 链路",
+                f"{result.scan_reason}；OCR 链路已关闭（OCR_ENABLED=false）",
             )
-        return _ocr_pdf(path, t0)
+        return _ocr_pdf(path, t0, file_hash=file_hash)
 
     duration_ms = int((time.perf_counter() - t0) * 1000)
     _assert_not_blank(result.doc)
@@ -213,12 +226,14 @@ def _parse_docx(path: Path, *, allow_ocr: bool) -> ParseOutcome:
     )
 
 
-def _parse_image(path: Path, *, allow_ocr: bool) -> ParseOutcome:
+def _parse_image(
+    path: Path, *, allow_ocr: bool, file_hash: str | None = None
+) -> ParseOutcome:
     """图片路径：先包成单页 PDF，再走 OCR。"""
     if not allow_ocr:
         raise ParseBlocked(
             BlockedReason.EMPTY_CONTENT,
-            "图片输入需要 OCR；阶段一未启用 OCR 链路",
+            "图片输入需要 OCR；OCR 链路已关闭（OCR_ENABLED=false）",
         )
     t0 = time.perf_counter()
     with tempfile.TemporaryDirectory() as tmp:
@@ -228,16 +243,27 @@ def _parse_image(path: Path, *, allow_ocr: bool) -> ParseOutcome:
         pdf_bytes = img_doc.convert_to_pdf()
         img_doc.close()
         pdf_path.write_bytes(pdf_bytes)
-        return _ocr_pdf(pdf_path, t0, source_path=path)
+        outcome = _ocr_pdf(pdf_path, t0, source_path=path, file_hash=file_hash)
+        # 图片原件前端渲染不了（PDF.js 只吃 PDF），把包好的 PDF 一并带回，
+        # 由流水线上传 MinIO 登记 `pdf_object_key`——否则工作台显示"正文无法渲染"。
+        # 扫描件 PDF 不需要：原件本身就是 PDF。
+        outcome.pdf_bytes = pdf_bytes
+        return outcome
 
 
-def _ocr_pdf(path: Path, t0: float, *, source_path: Path | None = None) -> ParseOutcome:
-    """OCR 路径（扫描件 / 图片）。**阶段一不启用**，代码已就绪。"""
+def _ocr_pdf(
+    path: Path,
+    t0: float,
+    *,
+    source_path: Path | None = None,
+    file_hash: str | None = None,
+) -> ParseOutcome:
+    """OCR 路径（扫描件 / 图片）。批次 8 起由 `OCR_ENABLED` 控制启用。"""
     dpi = settings.ocr_dpi
     engine = OcrEngine(dpi=dpi)
 
     try:
-        results = engine.recognize_pdf(path)
+        results = engine.recognize_pdf(path, file_hash=file_hash)
     except Exception as exc:  # noqa: BLE001 - OCR 失败需转为 blocked 而非崩溃
         raise ParseBlocked(
             BlockedReason.ERROR, f"OCR 执行失败: {type(exc).__name__}: {exc}"
@@ -256,12 +282,16 @@ def _ocr_pdf(path: Path, t0: float, *, source_path: Path | None = None) -> Parse
             f"OCR 平均置信度 {avg_conf:.2f} 低于阈值 {MIN_AVG_CONFIDENCE}",
         )
 
-    from app.services.parsing.types import DocumentText
-
     doc = DocumentText(pages=pages)
     _assert_not_blank(doc)
+    # OCR 只有逐行文字，没有版面分析结果；不补块则下游切不出任何条款
+    doc.blocks = build_ocr_blocks(doc)
 
     duration_ms = int((time.perf_counter() - t0) * 1000)
+    logger.info(
+        "OCR 解析完成: %s 页 / %s 块 / 平均置信度 %.3f",
+        doc.page_count, len(doc.blocks), avg_conf,
+    )
     return ParseOutcome(
         doc=doc,
         parse_method=ParseMethod.OCR_RAPIDOCR,
@@ -271,7 +301,10 @@ def _ocr_pdf(path: Path, t0: float, *, source_path: Path | None = None) -> Parse
         ocr_engine=settings.ocr_engine,
         ocr_dpi=dpi,
         avg_confidence=avg_conf or None,
-        notes=[f"OCR 识别结果，坐标精度有限；来源: {source_path.name if source_path else path.name}"],
+        notes=[
+            f"OCR 识别结果，坐标精度有限（字符框按行等宽切分，非真实字宽）；"
+            f"来源: {source_path.name if source_path else path.name}"
+        ],
     )
 
 

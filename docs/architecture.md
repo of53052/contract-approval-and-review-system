@@ -386,7 +386,7 @@ stateDiagram-v2
 | 状态 | 含义 | 进入条件 |
 |---|---|---|
 | `pending` | 待处理 | 任务创建 |
-| `parsing` | 解析中 | 开始解析（CPU OCR 为分钟级） |
+| `parsing` | 解析中 | 开始解析（扫描件 CPU OCR 为分钟级，故进度需上报） |
 | `reviewing` | 审查中 | 解析成功，进入规则+LLM 审查 |
 | `blocked` | 解析受阻 | 文档加密 / 正文为空 / 扫描件严重模糊 |
 | `completed` | 审查完成 | 审查完成，风险项已落库 |
@@ -417,6 +417,12 @@ timeout = base_timeout + per_page_timeout × page_count
 | `per_page_timeout` | 30 s | 单页 OCR 实测 6.08 s，留 5× 余量应对复杂版面 |
 
 同时解析过程**上报真实进度**（`已处理 3/12 页`），避免前端干等。
+
+> ⚠️ **本策略当前尚未接线**：`dispatcher.compute_timeout()` 与
+> `state_machine.mark_stale_tasks()` 都已实现，但**全仓无生产调用点**
+> （仅测试引用），`.env` 的 `WPS_COM_TIMEOUT` 同样无人读取（R11）。
+> 根因是 `win32com` 的 COM 调用**无法被安全中断**——超时逻辑只能事后标记，
+> 拦不住已卡死的线程，修法涉及并发/线程设计，故留待决策，不在批次 8 范围内。
 
 ---
 
@@ -950,7 +956,7 @@ flowchart TB
 |---|---|---|
 | `parsing/dispatcher` | 格式判定与路径分派 | 单一入口，避免调用方关心格式 |
 | `parsing/docx_converter` | DOCX → PDF | 策略模式，三级降级 |
-| `parsing/ocr_engine` | 扫描件 OCR | 结果缓存（按文件 hash） |
+| `parsing/ocr_engine` | 扫描件 OCR + 行→块组装 | 结果缓存（按文件 hash）；块组装是条款切分的前提 |
 | `parsing/anchor_builder` | 构建统一锚点 | 坐标映射的唯一实现点 |
 | `review/rule_engine` | 确定性规则匹配 | 关键词匹配放应用层，**不下推给 DB** |
 | `review/llm_reviewer` | LLM 语义研判 | 带防幻觉闸门 |
@@ -1313,7 +1319,7 @@ gantt
 
 | 包含 | 不包含（推阶段二） |
 |---|---|
-| 后端：数据模型 + 状态机 + 解析 + 规则 + LLM + 报告（Markdown） | 扫描件 OCR 链路 |
+| 后端：数据模型 + 状态机 + 解析 + 规则 + LLM + 报告（Markdown） | 扫描件 OCR 链路（**批次 8 已交付**，见 §18.2.4） |
 | 前端：大盘页 + 工作台 + 规则配置页 | — |
 | mock 审批服务 | PDF 报告精排 |
 | 1 个示例合同端到端（设备采购，DOCX） | 其余示例合同（销售/劳动） |
@@ -1326,7 +1332,6 @@ gantt
 
 ### 18.2 阶段二：完整交付
 
-- 扫描件 OCR 链路接入 + 缓存
 - 其余示例合同（销售 / 劳动）+ 完整断言集
 - PDF 报告精排
 - 批量审查（届时评估迁 Celery）
@@ -1338,6 +1343,8 @@ gantt
 > （`Dashboard.tsx` 的行内「导出记录」弹窗），接口 `GET /api/contracts/{id}/report/exports` 本已就绪。
 >
 > ⚠️ **`规则配置页` 已不在本清单**：随批次 7 交付（见 §18.2.3）。
+>
+> ⚠️ **`扫描件 OCR 链路` 已不在本清单**：随批次 8 交付（见 §18.2.4）。
 
 #### 18.2.1 阶段二·批次 5（已交付：PRD 补齐）
 
@@ -1416,6 +1423,66 @@ PRD §2.4.3「合规规则与模板页」/ §2.4.5「规则配置模块」：
 - **选项由后端下发**：枚举漂移会让用户选到后端不认的值、保存后静默失效
   （与列表页 `risk_level` 参数名漂移同类），`GET /api/rules/options` 集中提供。
 
+#### 18.2.4 阶段二·批次 8（已交付：扫描件 OCR 链路）
+
+PRD §2.4.6「文档解析引擎：…PDF 文本抽取与**扫描件 OCR 识别**」/ §2.4.10
+「能接入并解析 DOCX、PDF 及**图片扫描件**格式的合同附件」。
+
+批次 8 之前 `allow_ocr` 默认 `False`，扫描件与图片一律 `blocked`；OCR 代码路径
+"已就绪"但从未被真实数据跑通过。**接通之后才发现这条链路上有 6 处断裂**，
+本批次修掉前 5 处——"代码存在"与"能用"是两件事。
+
+| 项 | 实现位置 |
+|---|---|
+| OCR 行 → `ParsedBlock` 组装 | `parsing/ocr_engine.py::build_ocr_blocks` |
+| 解析分派开关（默认读 `.env`） | `parsing/dispatcher.py`：`allow_ocr=None` → `OCR_ENABLED` |
+| OCR 结果 Redis 缓存 | `ocr_engine.recognize_pdf(file_hash=)`，键 `ocr:{hash}:{page}`，TTL 7d |
+| 来源与置信度贯通 | `types.PageText.source/confidence` → `clause.source` → `anchor.source/confidence` |
+| 图片合同的渲染用 PDF | 图片路径回传 `pdf_bytes`，流水线上传 MinIO 登记 `pdf_object_key` |
+| 低置信元数据提示 | `clause_splitter` 按页置信度打 `need_review`；工作台汇总 `Alert` + 正文橙色虚线框 |
+| 上传入口放开 | `Dashboard.tsx` 的 `accept` 加图片扩展名 |
+| 扫描件样本与断言 | `scripts/make_scanned_sample.py`、`samples/scanned/`、同名 `.expected.json` |
+| 独立锚点校验 | `scripts/verify_ocr_anchors.py`；`run_tests.py --verify-anchors` 按来源分派 |
+
+**接通后才暴露的断点**（前三处会导致"任务成功但结果为空"这类**静默失败**）：
+
+| # | 断点 | 不修的后果 | 本批次 |
+|---|---|---|---|
+| 1 | OCR 路径不产出 `blocks` | `split_clauses` 只遍历 `doc.blocks`，扫描件**切出 0 条条款**，任务却报 `completed` | 已修 |
+| 2 | 三处 `Pipeline(...)` 未传 `allow_ocr`，默认 `False` | 扫描件永远 `blocked`，OCR 分支是死代码 | 已修 |
+| 3 | `clause.source` / `anchor.source` 写死 `native_text` | 锚点来源标错，前端不提示"识别定位可能有偏差" | 已修 |
+| 4 | 图片路径不回传 `pdf_bytes` | 图片合同无渲染 PDF，工作台显示"正文无法渲染" | 已修 |
+| 5 | `key_ocr_cache` 已定义但无人调用 | 每次重试重跑 6s/页（实测二次解析 **6.7s → 0.20s**） | 已修 |
+| 6 | `compute_timeout` / `mark_stale_tasks` 无人调用 | 动态超时策略未生效：任务卡死时无人标记 `timeout` | **未做**（与 R11 同源，见 §7.3 说明） |
+
+**核心设计：OCR 只能给"行框"，所以要自己造段落树**
+
+原生 PDF 的段落边界来自 PyMuPDF 的版面分析（`get_text("blocks")`），OCR 只产出
+"逐行文字 + 字符框"，`DocumentText.blocks` 默认为空。`build_ocr_blocks` 按**行**组装
+块（而非按段）：OCR 判断不了段落归属（行距、缩进都不稳），而条款切分本身按
+"条款编号起新条款"工作，行粒度足够，且不会因错误的段落合并把两条条款粘成一条。
+
+**核心设计：缓存整个 `OcrPageResult` 而非只缓存文本**
+
+前端高亮依赖 `char_boxes`（OCR 不给字符级坐标，这些框是按行等宽切分算出来的）。
+只缓存文本会让二次命中退化为"有文字、无坐标"，高亮全丢。缓存读写失败只记警告，
+不影响 OCR 本身——**缓存是加速手段，不是正确性依赖**。
+
+**核心设计：OCR 锚点的独立校验路径**
+
+`verify_anchors.mjs` 靠 PDF.js 的文本层取框内文字，而扫描件没有文本层，框内恒空，
+校验必然全红。因此 OCR 锚点改用 `verify_ocr_anchors.py`：按锚点 bbox 裁剪页面图像，
+**换 300 DPI**（解析用 200）重新识别——坐标系一致但像素网格不同，能真实检验 bbox
+是否落在文字上，而不是同源验证。裁剪需外扩 12pt：OCR 检测框比字形略小，紧贴裁剪
+会把首尾字切掉导致字序错乱（实测 pad=6 时「第九条不可抗力」被读成「可抗力九条第不」）。
+
+**两条固有精度限制**（写进 `docs/review-engine.md` §4.1，前端也据此提示）：
+
+- OCR 只有行框，字符框是**行内等宽切分**的近似值，风险项能准确定位到行/条款，
+  但框的左右边界可能与实际字形有偏差。
+- 扫描件没有 PDF.js 文本层，"点正文文字 → 反查风险卡片"不可用；
+  "风险卡片 → 正文高亮"不受影响。
+
 ---
 
 ## 19. 风险登记册
@@ -1428,13 +1495,15 @@ PRD §2.4.3「合规规则与模板页」/ §2.4.5「规则配置模块」：
 | R4 | LLM 幻觉编造原文引用 | 高亮定位失败，验收标准不达标 | 三级对齐 + `unanchored` 显式标记 | 已缓解 |
 | R5 | LLM 编造法律依据 | 报告可信度受损 | 限定知识库选取或标注"待人工复核" | 已缓解 |
 | R6 | 无 LLM API Key | 无法演示真实效果 | `MockProvider` 兜底，默认 Mock | 已缓解 |
-| R7 | CPU OCR 分钟级耗时 | 演示等待过长 | 示例合同用 DOCX 快速路径；OCR 结果缓存 | 已缓解 |
+| R7 | CPU OCR 分钟级耗时 | 演示等待过长 | 批次 8：Redis 按 file_hash 缓存（实测 6.7s → 0.20s）；演示仍优先 DOCX 路径 | 已缓解 |
 | R8 | 容器内存上限 7.87 GB | 大文档并发解析可能 OOM | 演示串行执行；阶段二评估并发上限 | 接受 |
 | R9 | 风险阈值是拟值非法律意见 | 误判 | 文档显式声明；阈值可配置 | 接受 |
 | R10 | 9p 挂载比 ext4 慢 1.8~2.2 倍 | 数据库性能下降 | 数据卷用 named volume（ext4），非 bind mount | 已缓解 |
 | R11 | **WPS COM 调用无超时保护**（`.env` 的 `WPS_COM_TIMEOUT` 无人读取） | 转换卡住则后台线程永久阻塞，任务停在 `parsing` 且无自动恢复 | 需先决策：COM 调用无法安全超时，修法涉及并发/线程设计 | **待决策** |
 | R12 | 重试链路状态流转重复（`retry` 置 parsing 后 Pipeline 再置一次） | 任务永久卡在 `parsing`，重试功能形同失效 | 批次 6 已修：Pipeline 幂等跳过 + 两条重试路径收敛到 `_do_retry` | 已缓解 |
 | R13 | 规则配置错误被引擎静默忽略（`logger.error` + `continue`） | 规则"已启用"却从不命中，审查漏报且无人察觉 | 批次 7 已缓解：写入路径 `validate_rule` 把非法配置变成 400；全量种子规则体检入测试 | 已缓解 |
+| R14 | OCR 只给行框，字符框是行内等宽切分的**近似值** | 扫描件上高亮的左右边界可能与实际字形有偏差（定位到行/条款仍准确） | 批次 8 接受：`source=ocr` + 置信度贯通到前端提示；锚点校验改用 300 DPI 独立重识别 | 接受 |
+| R15 | 扫描件无 PDF.js 文本层 | 正文「点文字 → 反查风险卡片」对扫描件不可用 | 批次 8 接受：正向「卡片 → 正文高亮」不受影响，文档与前端均提示 | 接受 |
 
 ---
 

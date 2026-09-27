@@ -80,6 +80,14 @@ def check_config() -> tuple[bool, list[str]]:
         warn(f"LLM 回落到 mock（provider={settings.llm_provider}）")
         warnings.append("LLM 未配置完整，将使用 MockProvider")
 
+    # OCR 链路开关：关闭时扫描件/图片会 blocked，属有意降级而非故障
+    if settings.ocr_enabled:
+        ok(f"OCR: 启用（引擎 {settings.ocr_engine}，{settings.ocr_dpi} DPI，"
+           f"元数据置信度门槛 {settings.ocr_metadata_review_threshold}）")
+    else:
+        warn("OCR 已关闭：扫描件与图片将直接进入 blocked(empty_content)")
+        warnings.append("OCR_ENABLED=false，扫描件无法审查")
+
     # 敏感项不应为空
     if not settings.mysql_password:
         fail("MYSQL_PASSWORD 为空")

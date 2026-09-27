@@ -246,6 +246,11 @@ def sync_todos(
     return [_to_task_out(t) for t in created]
 
 
+#: 图片扩展名：与 dispatcher.IMAGE_SUFFIXES 同口径（同步入口无法复用其 frozenset
+#: 里的点号写法，这里存无点形式）
+_IMAGE_EXTS = frozenset({"png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp"})
+
+
 def _sync_one(db: Session, adapter, todo, att, *, auto_review: bool) -> ReviewTask | None:
     """同步单个附件。已存在（同 file_hash）则返回 None。"""
     import hashlib
@@ -265,9 +270,11 @@ def _sync_one(db: Session, adapter, todo, att, *, auto_review: bool) -> ReviewTa
         return None
 
     ext = Path(downloaded.file_name).suffix.lstrip(".").lower() or "bin"
+    # 图片附件走 OCR 链路，格式如实登记（file_format 决定解析分派与渲染分支）
     fmt = {
-        "docx": FileFormat.DOCX.value, "pdf": FileFormat.PDF.value,
-    }.get(ext, FileFormat.PDF.value)
+        "docx": FileFormat.DOCX.value,
+        "pdf": FileFormat.PDF.value,
+    }.get(ext, FileFormat.IMAGE.value if ext in _IMAGE_EXTS else FileFormat.PDF.value)
 
     contract = Contract(
         title=todo.title, business_type=todo.business_type, file_format=fmt,

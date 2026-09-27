@@ -91,12 +91,14 @@ class Pipeline:
         task: ReviewTask,
         *,
         provider: LLMProvider | None = None,
-        allow_ocr: bool = False,
+        allow_ocr: bool | None = None,
     ) -> None:
         self.db = db
         self.task = task
         self.provider = provider
-        self.allow_ocr = allow_ocr
+        # None 时取 .env 的 OCR_ENABLED（默认 true）：扫描件与图片走 OCR。
+        # 显式传 False 可关掉，供无 OCR 依赖的环境或针对性测试使用。
+        self.allow_ocr = settings.ocr_enabled if allow_ocr is None else allow_ocr
         self._t0 = 0.0
 
     def run(self, source_path: Path) -> PipelineResult:
@@ -118,7 +120,13 @@ class Pipeline:
 
         # ---------- 阶段 1：解析 ----------
         try:
-            outcome = parse_document(source_path, allow_ocr=self.allow_ocr)
+            contract = self.db.get(Contract, self.task.contract_id)
+            outcome = parse_document(
+                source_path,
+                allow_ocr=self.allow_ocr,
+                # file_hash 让 OCR 结果可跨任务命中缓存（本地 CPU 单页约 6s）
+                file_hash=contract.file_hash if contract else None,
+            )
         except ParseBlocked as exc:
             self.db.rollback()
             sm.block(self.db, self.task, exc.reason.value, exc.detail)
@@ -302,13 +310,18 @@ class Pipeline:
         self.db.add(pr)
         self.db.flush()
         self._current_parse_result = pr
-        # 转换后 PDF 存 MinIO（前端统一用它渲染）
-        if outcome.parse_method.value.startswith("docx_"):
+        # 渲染用 PDF 存 MinIO（前端统一用它渲染）。
+        # 判据是"有没有产物字节"而非"是不是 DOCX 路径"：图片原件 PDF.js 渲染不了，
+        # OCR 路径会把包好的 PDF 放在 pdf_bytes 里一并带出来，同样需要上传。
+        if outcome.pdf_bytes:
             self._upload_converted_pdf(outcome)
         return pr
 
     def _upload_converted_pdf(self, outcome) -> None:
-        """把 DOCX 转换产物上传到 MinIO，供前端 PDF.js 渲染。
+        """把渲染用 PDF 上传到 MinIO，供前端 PDF.js 渲染。
+
+        DOCX 上传的是转换产物，图片上传的是"包成单页 PDF"的产物；
+        扫描件 PDF 不走上传（原件本身就是 PDF，前端直接用原件）。
 
         **只有真实上传成功才登记 `pdf_object_key`**：先 put 再写 key，
         避免出现"库里有 key、MinIO 里没对象"的悬空引用（前端会 404）。
@@ -318,8 +331,8 @@ class Pipeline:
         """
         pdf_bytes = getattr(outcome, "pdf_bytes", None)
         if not pdf_bytes:
-            # passthrough 降级（无分页）时不会有 PDF 产物
-            logger.info("无转换产物可上传（解析方式 %s）", outcome.parse_method.value)
+            # passthrough 降级（无分页）与扫描件 PDF 都没有产物
+            logger.info("无渲染产物可上传（解析方式 %s）", outcome.parse_method.value)
             return
 
         key = path_converted_pdf(self.task.contract_id)

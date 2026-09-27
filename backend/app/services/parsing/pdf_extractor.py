@@ -23,6 +23,7 @@ from app.services.parsing.types import (
     DocumentText,
     PageText,
     ParsedBlock,
+    guess_block_kind,
 )
 
 logger = logging.getLogger(__name__)
@@ -181,7 +182,7 @@ def _build_blocks(doc: pymupdf.Document, doc_text: DocumentText) -> list[ParsedB
             stripped = text.strip()
             if not stripped:
                 continue
-            kind = _guess_kind(stripped)
+            kind = guess_block_kind(stripped)
             blocks.append(
                 ParsedBlock(
                     kind=kind,
@@ -197,17 +198,6 @@ def _build_blocks(doc: pymupdf.Document, doc_text: DocumentText) -> list[ParsedB
             para_index += 1
         _ = base
     return blocks
-
-
-def _guess_kind(text: str) -> BlockKind:
-    """粗略判断块类型。
-
-    只做"看起来像标题"的启发式判断；表格识别交给 `find_tables`，
-    这里不做重活。标题判据：短（<40 字）、不含句末标点。
-    """
-    if len(text) <= 40 and not any(p in text for p in "。；;."):
-        return BlockKind.TITLE
-    return BlockKind.PARAGRAPH
 
 
 def find_tables(path: str | Path) -> list[dict]:

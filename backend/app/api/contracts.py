@@ -394,9 +394,9 @@ def download_contract_pdf(contract_id: int, db: Session = Depends(get_db)) -> Re
     """下载合同 PDF（前端 PDF.js 渲染用）。
 
     **统一渲染入口**（architecture.md §6、§14.3）：
+    - PDF：原件即 PDF，直接返回原件（扫描件同样走这条）
     - DOCX：返回 WPS COM 转换后的 PDF（`pdf_object_key`）
-    - PDF：原件即 PDF，直接返回原件
-    - 图片：阶段一未接入 OCR，返回 409 让前端提示
+    - 图片：返回 OCR 路径包好的单页 PDF（`pdf_object_key`）
 
     **后端代理 MinIO**，理由同 `reports.download_report`：前端不直连对象存储。
     """
@@ -404,17 +404,14 @@ def download_contract_pdf(contract_id: int, db: Session = Depends(get_db)) -> Re
 
     if c.file_format == FileFormat.PDF.value:
         bucket, key = settings.minio_bucket_contracts, c.file_object_key
-    elif c.file_format == FileFormat.DOCX.value:
-        if not c.pdf_object_key:
-            raise HTTPException(
-                status_code=409,
-                detail="该 DOCX 尚未生成渲染用 PDF（转换可能失败或任务未完成）",
-            )
+    elif c.pdf_object_key:
+        # DOCX 转换产物、图片包装产物都登记在这里
         bucket, key = settings.minio_bucket_contracts, c.pdf_object_key
     else:
         raise HTTPException(
             status_code=409,
-            detail=f"暂不支持渲染该格式: {c.file_format}（阶段一未接入 OCR）",
+            detail=f"该合同尚未生成渲染用 PDF（格式 {c.file_format}，"
+                   "转换/包装可能失败或任务未完成）",
         )
 
     resp = None

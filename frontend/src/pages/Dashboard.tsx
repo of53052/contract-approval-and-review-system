@@ -400,7 +400,8 @@ export default function Dashboard() {
               同步审批待办
             </Button>
             <Upload
-              accept=".docx,.pdf"
+              // 扫描件（PDF）与图片都走 OCR 链路，入口一并放开
+              accept=".docx,.pdf,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp"
               showUploadList={false}
               beforeUpload={(file) => {
                 uploadMut.mutate(file);

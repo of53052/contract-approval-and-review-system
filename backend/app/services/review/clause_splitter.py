@@ -17,10 +17,15 @@ import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
-from app.models.enums import ClauseType, MetadataKey
+from app.core.config import settings
+from app.models.enums import AnchorSource, ClauseType, MetadataKey
 from app.services.parsing.types import BlockKind, DocumentText, ParsedBlock
 
 logger = logging.getLogger(__name__)
+
+#: OCR 元数据的置信度门槛：低于此值标 `need_review`，工作台提示人工核对。
+#: 取值来源见 .env 的 `OCR_METADATA_REVIEW_THRESHOLD`（默认 0.85）。
+OCR_METADATA_REVIEW_THRESHOLD = settings.ocr_metadata_review_threshold
 
 #: 条款编号模式。覆盖三类常见写法：
 #:   第X条 / 第X章 / 第X节（中文数字）
@@ -101,11 +106,16 @@ def split_clauses(doc: DocumentText) -> list[ClauseDraft]:
     算法：遍历块，遇到"像条款起点"的块就开一个新条款；
     后续块归入当前条款，直到下一个起点。首个起点之前的内容
     归为前言条款（`ClauseType.OTHER`）。
+
+    条款的 `source` 取自文档级来源（`native_text` / `ocr`）：
+    扫描件的坐标来自 OCR 识别，前端据此提示"识别定位，可能有偏差"，
+    不能一律标成 `native_text`。
     """
     drafts: list[ClauseDraft] = []
     buffer: list[ParsedBlock] = []
     current_no: str | None = None
     seq = 0
+    source = doc.source
 
     def flush() -> None:
         nonlocal buffer, current_no, seq
@@ -128,7 +138,7 @@ def split_clauses(doc: DocumentText) -> list[ClauseDraft]:
                 char_end=last.char_end,
                 bbox=first.bbox,
                 seq=seq,
-                source="native_text",
+                source=source,
             )
         )
         seq += 1
@@ -232,15 +242,32 @@ _EFFECTIVE_CONDITION_RE = re.compile(
 )
 
 
+def _page_of_offset(doc: DocumentText, offset: int | None) -> int | None:
+    """求全文字符偏移所属页码。越界或为 None 时返回 None。"""
+    if offset is None:
+        return None
+    for page in doc.pages:
+        base = doc.page_offset(page.page_no)
+        if offset < base + len(page.text):
+            return page.page_no
+    return doc.pages[-1].page_no if doc.pages else None
+
+
 def extract_metadata(doc: DocumentText) -> list[MetadataDraft]:
     """从全文提取元数据。
 
     只提取"能在原文找到"的字段；找不到的字段**不写库**，
     由全局校验器（`global_checker`）按"必需字段缺失"报风险。
+
+    **OCR 来源的字段打置信度与 `need_review`**：扫描件 OCR 会丢失表格结构，
+    元数据质量天然低于文本层（架构 §5.2）。置信度低于
+    `OCR_METADATA_REVIEW_THRESHOLD` 时置 `need_review`，工作台会高亮提示
+    "识别结果，请人工核对"，而不是把识别错误当既定事实用。
     """
     text = doc.full_text
     out: list[MetadataDraft] = []
     seen: set[str] = set()
+    is_ocr = doc.source == AnchorSource.OCR.value
 
     def add(key: MetadataKey, raw: str, value_type: str,
             normalized: str | None = None,
@@ -257,11 +284,24 @@ def extract_metadata(doc: DocumentText) -> list[MetadataDraft]:
             lead = len(raw) - len(raw.lstrip())
             char_start += lead
             char_end = char_start + len(cleaned)
+
+        # 置信度按"字段所在页"取：不同页的识别质量可能不同，
+        # 用全文平均会把某页的模糊摊平掉。
+        confidence = 1.0
+        need_review = False
+        if is_ocr:
+            page_conf = doc.page_confidence(_page_of_offset(doc, char_start) or 1)
+            if page_conf is not None:
+                confidence = page_conf
+                need_review = page_conf < OCR_METADATA_REVIEW_THRESHOLD
+
         out.append(MetadataDraft(
             meta_key=key,
             meta_value=cleaned[:1024],
             value_normalized=(normalized or cleaned)[:512],
             value_type=value_type,
+            confidence=confidence,
+            need_review=need_review,
             char_start=char_start,
             char_end=char_end,
         ))

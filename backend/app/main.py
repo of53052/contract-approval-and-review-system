@@ -108,4 +108,6 @@ def runtime_config() -> dict:
         "llm_provider": "openai_compat" if settings.use_real_llm else "mock",
         "docx_converter": settings.docx_converter,
         "minio_bucket_contracts": settings.minio_bucket_contracts,
+        # 前端据此判断能否上传扫描件/图片（关闭时提示用户）
+        "ocr_enabled": settings.ocr_enabled,
     }

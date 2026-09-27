@@ -67,7 +67,10 @@ from app.models.enums import (  # noqa: E402
     FileFormat,
     TaskStatus,
 )
+import pymupdf  # noqa: E402
+
 from app.services.llm import get_provider  # noqa: E402
+from app.services.parsing.dispatcher import IMAGE_SUFFIXES  # noqa: E402
 from app.workers.pipeline import Pipeline  # noqa: E402
 
 SAMPLES_DIR = PROJECT_ROOT / "samples"
@@ -75,6 +78,15 @@ EXPECTED_DIR = SAMPLES_DIR / "expected"
 
 #: 参与比对的字段：规则与 LLM 的措辞不一致，只看 title 会误判漏报。
 _HAYSTACK_FIELDS = ("title", "reason", "legal_basis")
+
+#: OCR 锚点校验用的渲染 DPI。必须与解析时的 OCR_DPI（默认 200）不同，
+#: 否则是同源验证；300 DPI 下坐标系一致但像素网格不同，能真实检验 bbox。
+VERIFY_OCR_DPI = 300
+
+#: OCR 锚点校验的裁剪外扩（PDF point）。OCR 检测框比字形略小，紧贴裁剪会把
+#: 首尾字切掉、导致重识别字序错乱（实测 pad=6 时「第九条不可抗力」读成
+#: 「可抗力九条第不」，pad≥12 即正确）。
+OCR_CROP_PAD = 12.0
 
 
 @dataclass
@@ -231,7 +243,12 @@ def run_case(
     # 锚点坐标校验：拿**渲染用的那份 PDF** 实测 bbox 是否覆盖引用原文。
     # 这是后端锚点 → 前端高亮的契约边界，坐标约定错了这里就该红。
     if verify_anchors:
-        quote_ok = _verify_anchors_by_render(db, c, result.risks, case)
+        # 按锚点来源选校验路径：扫描件/图片无文本层，PDF.js 那条路测不出东西
+        is_ocr = sample.suffix.lower() in IMAGE_SUFFIXES or _is_scanned_pdf(sample)
+        if is_ocr:
+            quote_ok = _verify_ocr_anchors(c, result.risks, case, sample)
+        else:
+            quote_ok = _verify_anchors_by_render(db, c, result.risks, case)
         for check in result.risks:
             check.quote_ok = quote_ok.get(check.title)
 
@@ -301,6 +318,90 @@ def _match_one(
     return check
 
 
+def _is_scanned_pdf(path: Path) -> bool:
+    """判定 PDF 是否无文本层（扫描件）。读取失败时按"有文本层"处理（走 PDF.js 校验）。"""
+    try:
+        with pymupdf.open(path) as doc:
+            total = sum(len(p.get_text()) for p in doc)
+        return total < 20  # 与 pdf_extractor.MIN_TEXT_CHARS 同口径
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("判定扫描件失败，按文本型 PDF 处理: %s", exc)
+        return False
+
+
+def _render_pdf_of(sample: Path, tmpdir: Path) -> Path:
+    """取该样本"前端渲染用的那份 PDF"。
+
+    扫描件 PDF：原件即渲染件。
+    图片：与 dispatcher._parse_image 同一做法——包成单页 PDF。
+    """
+    if sample.suffix.lower() == ".pdf":
+        return sample
+    out = tmpdir / "image.pdf"
+    img = pymupdf.open(sample)
+    try:
+        out.write_bytes(img.convert_to_pdf())
+    finally:
+        img.close()
+    return out
+
+
+def _verify_ocr_anchors(
+    contract: Contract, checks: list[RiskCheck], case: dict, sample: Path
+) -> dict[str, bool]:
+    """OCR 来源的锚点校验：按 bbox 裁剪页面图像后**换 DPI 重识别**。
+
+    **为什么不能用 `_verify_anchors_by_render`**：那条路靠 PDF.js 的文本层取
+    框内文字，而扫描件/图片没有文本层，框内恒为空，校验必然全红。
+
+    独立性与阈值取舍见 `scripts/verify_ocr_anchors.py` 的模块说明。
+    """
+    from app.services.parsing.ocr_engine import OcrEngine
+
+    quote_map = {e["title"]: e.get("anchor_quote") for e in case["expected_risks"]}
+    targets = [
+        c for c in checks
+        if c.matched and quote_map.get(c.title) and c.bbox and c.page_no
+    ]
+    if not targets:
+        return {}
+
+    # 渲染用 PDF 用**本地样本**而非 MinIO：回归脚本只登记 object key，
+    # 并不真的上传原件（它跑的是解析→审查链路，不依赖对象存储）。
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf_path = _render_pdf_of(sample, Path(tmp))
+
+        engine = OcrEngine(dpi=VERIFY_OCR_DPI)
+        out: dict[str, bool] = {}
+        with pymupdf.open(pdf_path) as doc:
+            for check in targets:
+                page = doc[check.page_no - 1]
+                x0, y0, x1, y1 = check.bbox
+                clip = pymupdf.Rect(x0 - OCR_CROP_PAD, y0 - OCR_CROP_PAD,
+                                    x1 + OCR_CROP_PAD, y1 + OCR_CROP_PAD)
+                pix = page.get_pixmap(
+                    matrix=pymupdf.Matrix(VERIFY_OCR_DPI / 72.0, VERIFY_OCR_DPI / 72.0),
+                    clip=clip, alpha=False,
+                )
+                img = pymupdf.open(stream=pix.tobytes("png"), filetype="png")
+                try:
+                    got = engine.recognize_page(img[0]).text
+                finally:
+                    img.close()
+                want = _norm_text(quote_map[check.title])
+                seen = _norm_text(got)
+                out[check.title] = bool(want and seen) and (
+                    want[:8] in seen or seen[:8] in want
+                )
+        return out
+
+
+def _norm_text(s: str) -> str:
+    """去全部空白，消除换行与空格差异。"""
+    return "".join(s.split())
+
+
 def _verify_anchors_by_render(
     db: Session, contract: Contract, checks: list[RiskCheck], case: dict
 ) -> dict[str, bool]:
@@ -308,6 +409,8 @@ def _verify_anchors_by_render(
 
     为什么绕到 Node：后端锚点由 PyMuPDF 产生，用 PyMuPDF 自校验是同源验证，
     测不出"前端换算公式错"。这里复用前端组件的同一份换算实现（anchorCoords.ts）。
+
+    ⚠️ 仅适用于**有文本层**的 PDF。扫描件/图片走 `_verify_ocr_anchors`。
     """
     import json
     import subprocess

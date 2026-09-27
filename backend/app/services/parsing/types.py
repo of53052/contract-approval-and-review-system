@@ -55,6 +55,9 @@ class PageText:
     text: str
     char_boxes: list[CharBox]
     source: str  # AnchorSource 的值：native_text / ocr
+    #: OCR 识别置信度（0~1）。原生文本层为 None——文本层坐标是权威值，无"识别"一说。
+    #: 用于给锚点与元数据打"识别定位，可能有偏差"的质量标记（data-model §5.7）。
+    confidence: float | None = None
 
     def __post_init__(self) -> None:
         if len(self.text) != len(self.char_boxes):
@@ -80,6 +83,18 @@ class PageText:
             max(b.x1 for b in boxes),
             max(b.y1 for b in boxes),
         )
+
+
+def guess_block_kind(text: str) -> BlockKind:
+    """粗略判断块类型：短且无句末标点者视为标题。
+
+    **原生与 OCR 两条路径共用同一启发式**：两边各写一份会让"同一句话
+    在原生态是标题、扫描态是段落"，进而影响条款切分与锚点级别。
+    表格识别交给 `pdf_extractor.find_tables`，这里不做重活。
+    """
+    if len(text) <= 40 and not any(p in text for p in "。；;."):
+        return BlockKind.TITLE
+    return BlockKind.PARAGRAPH
 
 
 @dataclass
@@ -130,6 +145,22 @@ class DocumentText:
     @property
     def page_count(self) -> int:
         return len(self.pages)
+
+    @property
+    def source(self) -> str:
+        """整份文档的坐标来源（`AnchorSource` 的值）。
+
+        **为什么在文档级取**：一份文档要么整体有文本层、要么整体靠 OCR，
+        不存在逐页混源。下游（条款切分、锚点构建）据此统一标注来源，
+        避免每处各自猜。
+        """
+        return self.pages[0].source if self.pages else "native_text"
+
+    def page_confidence(self, page_no: int) -> float | None:
+        """该页的 OCR 置信度；原生文本层页返回 None。"""
+        if 1 <= page_no <= len(self.pages):
+            return self.pages[page_no - 1].confidence
+        return None
 
     def page(self, page_no: int) -> PageText:
         """按页码（从 1 开始）取页。"""

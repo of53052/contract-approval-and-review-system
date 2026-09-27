@@ -100,6 +100,19 @@ body {
   transform: translateY(1px);
 }
 
+/*
+ * 低置信度元数据（OCR 识别质量不足）：橙色虚线 + 橙色标签。
+ * 用颜色区分"可以信"与"需要核对"，而不是让用户逐个点开看置信度。
+ */
+.pdf-meta-highlight.need-review {
+  border-color: rgba(250, 140, 22, 0.9);
+  background: rgba(250, 140, 22, 0.08);
+}
+
+.pdf-meta-highlight.need-review .pdf-meta-label {
+  background: rgba(250, 140, 22, 0.9);
+}
+
 /* 头部图例小方块：与正文里的元数据虚线框同款，建立视觉对应 */
 .pdf-meta-legend {
   display: inline-block;

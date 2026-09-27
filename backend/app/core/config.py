@@ -66,8 +66,13 @@ class Settings(BaseSettings):
     wps_com_timeout: int = Field(default=60)
 
     # ---------------- 解析参数 ----------------
+    #: 扫描件 / 图片是否启用 OCR 链路（PRD 2.4.10 要求支持扫描件，故默认开启）。
+    #: 置 false 时扫描件与图片直接 blocked(empty_content)，便于在无 OCR 环境降级。
+    ocr_enabled: bool = Field(default=True)
     ocr_dpi: int = Field(default=200)
     ocr_engine: str = Field(default="rapidocr")
+    #: OCR 元数据置信度低于此值时标 need_review，提示人工核对（data-model §5.5）。
+    ocr_metadata_review_threshold: float = Field(default=0.85)
     parse_base_timeout: int = Field(default=60)
     parse_per_page_timeout: int = Field(default=30)
 

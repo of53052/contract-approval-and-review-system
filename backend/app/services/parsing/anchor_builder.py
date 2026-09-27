@@ -87,6 +87,9 @@ class AnchorBuilder:
 
     def __init__(self, doc: DocumentText) -> None:
         self.doc = doc
+        #: 文档级坐标来源。OCR 文档的所有锚点都标 `ocr`，
+        #: 前端据此提示"识别定位，可能有偏差"（data-model §5.7）。
+        self._default_source = AnchorSource(doc.source)
         self._full_text = doc.full_text
         self._page_offsets = self._compute_page_offsets(doc)
         # 归一化文本 + 下标映射：norm_map[i] = 归一化第 i 个字符在原文中的下标
@@ -100,13 +103,18 @@ class AnchorBuilder:
         self,
         quote: str,
         *,
-        source: AnchorSource = AnchorSource.NATIVE_TEXT,
+        source: AnchorSource | None = None,
         confidence: float | None = None,
     ) -> AnchorResult:
         """把一段引用文本对齐到原文位置。
 
         依次尝试精确匹配 → 模糊匹配 → 段落级降级；全部失败返回 NONE。
+
+        `source` 为 None 时取文档级来源（OCR 文档即 `ocr`）——不这样做的话，
+        扫描件的锚点会被标成 `native_text`，前端就不提示坐标偏差了。
         """
+        if source is None:
+            source = self._default_source
         if not quote or not quote.strip():
             return AnchorResult(level=AnchorLevel.NONE, source=source)
 
@@ -144,9 +152,10 @@ class AnchorBuilder:
                     char_start=None,  # 段落级按设计不带字符区间
                     char_end=None,
                     quote_text=blk.text[:512],
-                    source=AnchorSource.NATIVE_TEXT,
+                    source=self._default_source,
+                    confidence=self.doc.page_confidence(page_no),
                 )
-        return AnchorResult(level=AnchorLevel.NONE, source=AnchorSource.NATIVE_TEXT)
+        return AnchorResult(level=AnchorLevel.NONE, source=self._default_source)
 
     def locate_span(self, char_start: int, char_end: int) -> AnchorResult | None:
         """按**已知的全文字符区间**构造精确锚点。
@@ -168,7 +177,7 @@ class AnchorBuilder:
             return None
         return self._from_real_range(
             char_start, char_end, quote="", level=AnchorLevel.EXACT,
-            source=AnchorSource.NATIVE_TEXT, confidence=None,
+            source=self._default_source, confidence=None,  # 由 _from_real_range 按页兜底
         )
 
     def locate_clause(self, quote: str) -> list[AnchorResult]:
@@ -224,10 +233,11 @@ class AnchorBuilder:
                 bbox=bbox,
                 char_start=None,
                 char_end=None,
+                source=self._default_source,
+                confidence=page.confidence,
                 # 只放该页对应的片段：跨页条款会有多条锚点，
                 # 若每条都带整条条款原文，报告里会重复显示同一段话。
                 quote_text=page.text[local_start:local_end][:512] or None,
-                source=AnchorSource.NATIVE_TEXT,
             ))
         return out
 
@@ -369,6 +379,10 @@ class AnchorBuilder:
         if bbox is None:
             # 区间内全是空白（如引用恰好落在换行处），无法给出有效框
             return None
+        if confidence is None:
+            # OCR 文档统一带页置信度：调用方（精确/模糊/片段匹配）不必各自传，
+            # 少一处遗漏就少一处"锚点标了 ocr 却没置信度"的失真。
+            confidence = page.confidence
         return AnchorResult(
             level=level,
             page_no=page_no,

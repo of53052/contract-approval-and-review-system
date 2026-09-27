@@ -1,0 +1,83 @@
+{
+  "contract": "设备采购合同-扫描件.pdf",
+  "sample_dir": "scanned",
+  "business_type": "purchase",
+  "note": "扫描件版本的期望风险点：内容与 samples/purchase 的 DOCX 版本完全相同，只是输入换成无文本层的扫描件 PDF，用于验证 OCR 链路（批次 8）能产出同样的条款切分与风险结论。anchor_quote 按 OCR 识别结果书写——OCR 会把「合同编号：」的冒号识别为半角、去掉部分空格，因此引用按识别后的实际文本录入。",
+  "expected_overall": "high",
+  "expected_conclusion": "reject",
+  "expected_risks": [
+    {
+      "title": "知识产权归属供应商",
+      "match_keywords": [
+        "知识产权"
+      ],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "PRD 2.4.9 场景一：知识产权全部归对方，我方丧失成果所有权",
+      "anchor_quote": "第八条知识产权本项目产生的知识产权归供应商所有。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "到货即付全款无验收条款",
+      "match_keywords": [
+        "付款前置验收",
+        "到货即付"
+      ],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "PRD 2.4.9 场景一：付款不以验收为前提，先付款后验收",
+      "anchor_quote": "第四条验收标准",
+      "expected_anchor_level": "paragraph"
+    },
+    {
+      "title": "违约责任无上限",
+      "match_keywords": [
+        "无上限"
+      ],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "赔偿责任无上限，责任敞口不可预估",
+      "anchor_quote": "第五条违约责任乙方逾期交货的，应承担甲方全部损失，赔偿责任无上限。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "管辖地约定违规",
+      "match_keywords": [
+        "管辖"
+      ],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "约定香港仲裁，维权成本高",
+      "anchor_quote": "第七条争议解决因本合同产生的争议，提交香港仲裁。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "保密义务无期限",
+      "match_keywords": [
+        "保密"
+      ],
+      "risk_level": "medium",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "保密义务未约定期限",
+      "anchor_quote": "第六条保密义务",
+      "expected_anchor_level": "paragraph"
+    },
+    {
+      "title": "不可抗力无通知时效",
+      "match_keywords": [
+        "不可抗力"
+      ],
+      "risk_level": "medium",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "未约定通知时效与证明文件要求",
+      "anchor_quote": "第九条不可抗力",
+      "expected_anchor_level": "paragraph"
+    }
+  ]
+}

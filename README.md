@@ -115,7 +115,12 @@ npm run dev
 > 左栏正文里**虚线蓝框**是提取到的元数据字段（甲方 / 合同金额 / 合同编号…），
 > 与**半透明实底**的风险高亮视觉区分：前者是"提取到的信息"，后者是"发现的问题"。
 
-也可以直接在大盘页 **上传合同**（`.docx` / `.pdf`）走同一条链路。
+也可以直接在大盘页 **上传合同**（`.docx` / `.pdf` / **图片扫描件**）走同一条链路。
+
+> 📷 **扫描件与图片**（批次 8）：走本地 CPU OCR（`RapidOCR`，约 6s/页，
+> 二次解析命中 Redis 缓存约 0.2s）。识别结果在正文里是**橙色虚线框**的
+> 元数据字段 + 置信度提示；工作台顶部会汇总「有 N 个提取字段置信度偏低」。
+> 扫描件没有文本层，因此「点正文文字反查风险卡片」不可用（卡片 → 正文高亮正常）。
 
 审查前想调整判定口径，去右上角 **「规则配置」**：改规则 / 加规则 → 回大盘页重新
 **重试**（或同步新的待办），新口径即生效。详见 §3.2。
@@ -201,6 +206,9 @@ npm run dev
 | `LLM_API_KEY` | — | 同上 |
 | `LLM_MODEL` | — | 模型名 |
 | `DOCX_CONVERTER` | `wps_com` | DOCX → PDF 转换器 |
+| `OCR_ENABLED` | `true` | 扫描件 / 图片是否走 OCR；置 `false` 则直接 `blocked` |
+| `OCR_DPI` | `200` | OCR 渲染 DPI（越高越准、越慢） |
+| `OCR_METADATA_REVIEW_THRESHOLD` | `0.85` | 元数据置信度低于此值标 `need_review`，工作台提示人工核对 |
 
 **无 LLM Key 也能完整演示**：`LLM_PROVIDER=mock` 时用预置结论回放，
 整条链路（解析 → 审查 → 落库 → 报告 → 回写）依然走通。
@@ -219,8 +227,12 @@ backend\.venv\Scripts\python.exe scripts\check_consistency.py
 # 回归断言集：跑示例合同，比对人工标注的期望风险点
 backend\.venv\Scripts\python.exe scripts\run_tests.py
 
-# 加上锚点坐标校验（用真实渲染的 PDF + PDF.js 实测高亮位置）
+# 加上锚点坐标校验（用真实渲染的 PDF + PDF.js 实测高亮位置；
+# 扫描件/图片自动改走 OCR 锚点校验：按 bbox 裁剪 + 300 DPI 重识别）
 backend\.venv\Scripts\python.exe scripts\run_tests.py --verify-anchors
+
+# 单独校验某份扫描件合同的 OCR 锚点（需先跑出该合同）
+backend\.venv\Scripts\python.exe scripts\verify_ocr_anchors.py <合同ID>
 ```
 
 前端：
@@ -243,6 +255,8 @@ npx vite build       # 生产构建
 | 接口层 | `backend/tests/test_api.py` | HTTP 契约、错误路径、不变量维护、软删除 |
 | 配置校验 | `backend/tests/test_rule_config.py` | 规则/示范条款的写入校验 + **全量种子规则体检**（保证库里没有引擎读不懂的规则） |
 | 质量回归 | `scripts/run_tests.py` | 示例合同的期望风险点是否被识别、等级与锚点是否正确 |
+| OCR 链路 | `backend/tests/test_ocr.py` | 行→块组装、来源/置信度贯通、坐标换算、缓存序列化、扫描件端到端 |
+| OCR 锚点 | `scripts/verify_ocr_anchors.py` | 扫描件锚点 bbox 是否真的框住引用原文（换 DPI 独立重识别） |
 
 ## 6. 目录结构
 
@@ -295,6 +309,7 @@ contract-approval-and-review-system/
 │
 ├── samples/
 │   ├── purchase/              采购合同示例（含高风险用例）
+│   ├── scanned/               扫描件示例（无文本层 PDF，走 OCR 链路）
 │   └── expected/              人工标注的期望风险点（回归断言集）
 │
 └── scripts/
@@ -303,6 +318,8 @@ contract-approval-and-review-system/
     ├── check_env.py           环境自检
     ├── check_consistency.py   数据一致性检查 C1~C8
     ├── seed_data.py           规则库 / 示范条款 / 黑名单种子
+    ├── make_scanned_sample.py 生成扫描件样本（栅格化 + 无文本层自检）
+    ├── verify_ocr_anchors.py  OCR 锚点坐标校验（裁剪 + 换 DPI 重识别）
     └── run_tests.py           回归断言集执行器
 ```
 
@@ -312,7 +329,8 @@ contract-approval-and-review-system/
 |---|---|
 | WPS COM 依赖交互式桌面 | 后端不能服务化（容器/无桌面会话下 DOCX 分页失效，走无分页降级） |
 | WPS 与 Word 分页可能不一致 | 报告标注"页码基于 WPS 排版" |
-| 扫描件 OCR 阶段一未启用 | 图片输入返回 409；`RapidOCR` 代码路径已就绪 |
+| 扫描件 OCR 已启用（批次 8） | 本地 CPU 约 6s/页，二次解析走 Redis 缓存；OCR 只给行框，字符级高亮是行内等宽切分的近似值 |
+| 扫描件无文本层 | 工作台「点正文文字 → 反查风险卡片」不可用；卡片 → 正文高亮正常 |
 | 合同版本管理未做 | `contract` ↔ `review_task` 1:1 |
 | 单进程后台线程 | 演示并发为 1；批量审查需迁 Celery（阶段二） |
 | 黑名单是 mock 数据 | 不代表真实工商信息 |
@@ -326,6 +344,8 @@ contract-approval-and-review-system/
 | 上传 DOCX 后一直"解析中" | WPS 是否可正常打开文档；看后端日志的转换器降级链 |
 | 任务变 `blocked` | 看工作台"审查轨迹"或 `GET /api/contracts/{id}/events` |
 | 正文区提示"正文无法渲染" | 该合同尚无转换后 PDF（`pdf_object_key` 为空）；审查结果仍可看 |
+| 上传图片后卡在"解析中"很久 | 图片走 CPU OCR（约 6s/页）；二次上传同一文件命中缓存会快很多 |
+| 扫描件正文没有文字高亮 | 正常：扫描件无 PDF.js 文本层，只有元数据虚线框与风险高亮 |
 | 风险卡片有"未锚定"标记 | LLM 引用无法定位到原文，属防幻觉闸门正常工作，需人工核查 |
 | 回写失败 | 看 `GET /api/contracts/{id}/writeback/status` 的 `error_detail` |
 | 前端 `/api` 请求 404 | 后端没起，或 `vite.config.ts` 代理目标端口不对 |

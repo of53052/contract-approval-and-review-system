@@ -14,7 +14,7 @@ backend/app/services/
 │   ├── text_normalize.py    全角转半角、标点统一、similarity
 │   ├── pdf_extractor.py     PyMuPDF rawdict 提取 + 字体度量修复
 │   ├── docx_converter.py    WPS COM / LibreOffice / Passthrough 三级降级
-│   ├── ocr_engine.py        RapidOCR（阶段一不启用）
+│   ├── ocr_engine.py        RapidOCR + 行→块组装（批次 8 起启用）
 │   ├── anchor_builder.py    引用 → 坐标，四级降级（唯一坐标映射点）
 │   └── dispatcher.py        格式判定 + 路径分派，唯一入口 parse_document()
 ├── review/                  审查层：段落树 → 风险清单
@@ -94,9 +94,23 @@ pending
 |---|---|---|
 | DOCX | WPS COM 导出 PDF → PyMuPDF 提取 | **分页来自 WPS 排版**，报告须标注 |
 | 文本 PDF | PyMuPDF `rawdict` 字符级 bbox | 最快路径 |
-| 扫描件 / 图片 | PyMuPDF 渲染 + RapidOCR | 阶段一不启用，`allow_ocr=False` 时直接 blocked |
+| 扫描件 / 图片 | PyMuPDF 渲染 + RapidOCR | 批次 8 起启用，开关 `OCR_ENABLED`（默认 true） |
 
 **降级链**：`wps_com` → `libreoffice` → `passthrough`。实际链落库到 `parse_result.converter_fallback_chain`，用于解释报告里的页码语义。
+
+**OCR 路径的三处接缝**（批次 8 补齐，此前是断的）：
+
+| 接缝 | 不补会怎样 |
+|---|---|
+| `build_ocr_blocks`：OCR 行 → `ParsedBlock` | `split_clauses` 只遍历 `blocks`，不补则**切出 0 条条款**，任务却报 `completed` |
+| `PageText.source='ocr'` + `confidence` | 条款/锚点会被标成 `native_text`，前端不提示"识别定位，可能有偏差" |
+| `pdf_bytes`（图片路径回传包好的 PDF） | 图片合同无渲染用 PDF，工作台显示"正文无法渲染" |
+
+**OCR 结果缓存**：按 `ocr:{file_hash}:{page}` 存 Redis（TTL 7 天）。实测同一份 2 页扫描件二次解析 **6.7s → 0.20s**。缓存读写失败只记警告，不影响 OCR 本身。
+
+> ⚠️ **OCR 的坐标精度有固有上限**：RapidOCR 只给**行框**，不给字符级坐标。本项目按行内等宽切分给各字符，因此"高亮到某几个字"在扫描件上是**近似**的。风险项仍能准确定位到行/条款，但框的左右边界可能与实际字形有偏差。
+>
+> ⚠️ **扫描件没有 PDF.js 文本层**：工作台正文里点文字反向定位风险卡片的能力对扫描件不可用（文本层为空）；风险卡片 → 正文的正向高亮跳转不受影响。
 
 ### 4.2 锚点：四级降级（`anchor_builder.locate`）
 
@@ -195,9 +209,12 @@ Windows fatal exception: code 0x800706be
 
 测试用原始 SQL 改 `review_task.status` 后，**必须 `db.expire_all()`**：`SessionLocal` 配了 `expire_on_commit=False`，原始 SQL 绕过身份映射，不 expire 会读到过期对象，导致"非法流转"之类的假失败。
 
-### 7.4 阶段一明确不做
+### 7.4 尚未做
 
-扫描件 OCR 链路（代码已就绪，`allow_ocr=False`）、规则配置页、PDF 报告精排、合同版本管理、blocked 重试 UI。
+PDF 报告精排、合同版本管理、批量审查（迁 Celery）。
+
+> 规则配置页随批次 7 交付、扫描件 OCR 链路随批次 8 交付，
+> blocked 重试 UI 随工作台一并交付，均不在本清单。
 
 ---
 

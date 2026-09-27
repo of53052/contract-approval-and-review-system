@@ -600,7 +600,7 @@ erDiagram
 | `page_no` | INT | ❌ | — | 起始页码，从 1 开始 |
 | `page_end` | INT | ✅ | NULL | 结束页码（跨页条款） |
 | `para_index` | INT | ❌ | — | 段落索引，从 0 开始 |
-| `char_start` | INT UNSIGNED | ✅ | NULL | 在**全文**中的字符起始偏移；扫描件为 NULL |
+| `char_start` | INT UNSIGNED | ✅ | NULL | 在**全文**中的字符起始偏移；段落级降级时为 NULL |
 | `char_end` | INT UNSIGNED | ✅ | NULL | 字符结束偏移（不含） |
 | `bbox_x0` | DOUBLE | ✅ | NULL | 起始页坐标（PDF point） |
 | `bbox_y0` | DOUBLE | ✅ | NULL | — |
@@ -657,7 +657,8 @@ erDiagram
 **不变量**
 
 - `meta_key = 'amount'` ⟹ `value_type = 'decimal'` 且 `value_normalized` 可转为 `Decimal`
-- `need_review = 1` ⟹ `confidence < 阈值`（默认 0.9）
+- `need_review = 1` ⟹ `confidence < 阈值`
+  （阈值取 `.env` 的 `OCR_METADATA_REVIEW_THRESHOLD`，默认 `0.85`；原生文本层恒 `confidence=1.0`）
 
 > ⚠️ **元数据的锚点走 `anchor` 表**（`owner_type='contract_metadata'`），
 > 因为元数据值的位置是"分析定位"的结果，且一个值可能由多处拼接（如金额出现在
@@ -731,7 +732,7 @@ erDiagram
 | `bbox_y0` | DOUBLE | ❌ | — | 左上 Y |
 | `bbox_x1` | DOUBLE | ❌ | — | 右下 X |
 | `bbox_y1` | DOUBLE | ❌ | — | 右下 Y |
-| `char_start` | INT UNSIGNED | ✅ | NULL | 全文中的字符起始；扫描件为 NULL |
+| `char_start` | INT UNSIGNED | ✅ | NULL | 全文中的字符起始；段落级锚点为 NULL（OCR 的精确/模糊锚点有值） |
 | `char_end` | INT UNSIGNED | ✅ | NULL | 字符结束（不含） |
 | `quote_text` | VARCHAR(512) | ✅ | NULL | 命中的原文片段（用于校验与展示） |
 | `source` | VARCHAR(16) | ❌ | — | `AnchorSource` |

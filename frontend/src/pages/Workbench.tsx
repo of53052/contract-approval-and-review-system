@@ -40,7 +40,13 @@ import type { RiskItem } from "../types";
 import PdfViewer from "../components/PdfViewer";
 import RiskCard from "../components/RiskCard";
 import WritebackBar from "../components/WritebackBar";
-import { BUSINESS_TYPE_LABEL, RISK_META, formatBytes, formatAmount } from "../constants";
+import {
+  BUSINESS_TYPE_LABEL,
+  METADATA_LABEL,
+  RISK_META,
+  formatBytes,
+  formatAmount,
+} from "../constants";
 
 export default function Workbench() {
   const { id } = useParams<{ id: string }>();
@@ -171,6 +177,8 @@ export default function Workbench() {
   const c = contractQ.data;
   const busy = c.status === "pending" || c.status === "parsing" || c.status === "reviewing";
   const live = progressQ.data?.live_progress;
+  // 低置信度的提取字段（OCR 来源才有），用于顶部汇总提示
+  const reviewMeta = (metadataQ.data ?? []).filter((m) => m.need_review);
 
   return (
     <Flex vertical style={{ height: "calc(100vh - 64px)" }}>
@@ -237,6 +245,32 @@ export default function Workbench() {
                 重试
               </Button>
             </Flex>
+          }
+        />
+      )}
+
+      {/*
+        低置信度元数据提示：OCR 来源的字段质量参差，逐个点开看置信度成本太高。
+        这里做一次汇总，把"需要核对哪几个字段"直接摆出来。
+      */}
+      {reviewMeta.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ borderRadius: 0 }}
+          message={`有 ${reviewMeta.length} 个提取字段置信度偏低，建议人工核对`}
+          description={
+            <Typography.Text style={{ fontSize: 12 }}>
+              {reviewMeta
+                .map(
+                  (m) =>
+                    `${METADATA_LABEL[m.meta_key] || m.meta_key}（${(
+                      m.confidence * 100
+                    ).toFixed(0)}%）`,
+                )
+                .join("、")}
+              {"　"}正文中已用橙色虚线框标出。
+            </Typography.Text>
           }
         />
       )}

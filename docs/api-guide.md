@@ -75,7 +75,7 @@ FastAPI 统一返回：
 | GET | `/api/contracts/{id}/metadata` | 提取的元数据（含 `anchors`，供正文高亮字段位置） |
 | GET | `/api/contracts/{id}/events` | 任务事件轨迹（审计） |
 | GET | `/api/contracts/{id}/parse-results` | 解析历史（重试后 `attempt` 递增） |
-| GET | `/api/contracts/{id}/pdf` | **渲染用 PDF**（DOCX 返回转换产物，PDF 返回原件） |
+| GET | `/api/contracts/{id}/pdf` | **渲染用 PDF**（PDF 返回原件，DOCX / 图片返回产物） |
 | GET | `/api/contracts/{id}/file` | 合同原件下载 |
 
 **`/pdf` 为什么必需**：前端统一用 PDF.js 渲染（架构 §14.3），
@@ -84,9 +84,13 @@ FastAPI 统一返回：
 
 | 情形 | 行为 |
 |---|---|
-| DOCX | 返回 `pdf_object_key` 指向的转换产物；尚未生成时 **409** |
-| PDF | 直接返回原件 |
-| 图片 | 阶段一未接入 OCR，返回 **409** |
+| PDF | 直接返回原件（**扫描件也走这条**，原件本身就是 PDF） |
+| DOCX | 返回 `pdf_object_key` 指向的 WPS COM 转换产物；尚未生成时 **409** |
+| 图片 | 返回 OCR 路径包成的单页 PDF（`pdf_object_key`）；尚未生成时 **409** |
+
+> ⚠️ **图片为什么要包成 PDF**：PDF.js 只吃 PDF，图片原件渲染不了。
+> 批次 8 起，解析图片时会顺带 `convert_to_pdf()` 并把产物登记到 `pdf_object_key`，
+> 否则工作台会显示"正文无法渲染"。扫描件 PDF 不需要这一步。
 
 ### 2.3 任务 `tasks`
 
@@ -257,6 +261,11 @@ not_written ──> writing ──> success
 | `bbox_*` | **PDF point 坐标，左上原点**（非像素）。前端乘 scale 即得像素 |
 | `char_start/end` | 全文字符区间；**段落级锚点为 `null`** |
 | `anchor_level` | `exact` / `fuzzy` / `paragraph`；`none` 不写库 |
+| `source` | `native_text`（有文本层）/ `ocr`（扫描件、图片）。**文档级取值**，不逐页混源 |
+| `confidence` | OCR 页置信度（0~1）；`native_text` 为 `null`。前端据此提示"识别定位，可能有偏差" |
+
+> ⚠️ **OCR 锚点的坐标是近似的**：RapidOCR 只给行框，字符框按行内等宽切分算出。
+> 风险项能准确定位到行/条款，但框的左右边界可能与实际字形有偏差。
 
 **⚠️ 坐标约定是前后端最容易错的地方**：不要用 PDF.js 的
 `viewport.convertToViewportRectangle()`，它假定输入是 PDF 原始坐标系

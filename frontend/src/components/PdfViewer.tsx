@@ -57,6 +57,10 @@ interface HighlightBox {
 interface MetaBox {
   metaId: number;
   label: string;
+  /** 提取置信度（OCR 来源 < 1.0）；原生文本层恒为 1 */
+  confidence: number;
+  /** 低置信度标记：渲染为橙色虚线 + "待核对"角标 */
+  needReview: boolean;
   left: number;
   top: number;
   width: number;
@@ -340,7 +344,13 @@ function PdfPage({
           scale,
           [vx0, vy0, vx0 + viewport.width / scale, vy0 + viewport.height / scale],
         );
-        out.push({ metaId: m.id, label: METADATA_LABEL[m.meta_key] || m.meta_key, ...box });
+        out.push({
+          metaId: m.id,
+          label: METADATA_LABEL[m.meta_key] || m.meta_key,
+          confidence: m.confidence,
+          needReview: m.need_review,
+          ...box,
+        });
       }
     }
     return out;
@@ -381,16 +391,23 @@ function PdfPage({
       {metaBoxes.map((b, i) => (
         <div
           key={`meta-${b.metaId}-${i}`}
-          className="pdf-meta-highlight"
+          className={`pdf-meta-highlight${b.needReview ? " need-review" : ""}`}
           style={{
             left: b.left,
             top: b.top,
             width: b.width,
             height: b.height,
           }}
-          title={`提取字段：${b.label}`}
+          title={
+            b.needReview
+              ? `提取字段：${b.label}（识别置信度 ${(b.confidence * 100).toFixed(0)}%，请人工核对）`
+              : `提取字段：${b.label}`
+          }
         >
-          <span className="pdf-meta-label">{b.label}</span>
+          <span className="pdf-meta-label">
+            {b.label}
+            {b.needReview && " ⚠"}
+          </span>
         </div>
       ))}
       {boxes.map((b, i) => (
