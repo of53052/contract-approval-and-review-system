@@ -140,8 +140,9 @@ export default function PdfViewer({ contractId, risks, focusAnchor, onPickRisk }
           />
         )}
         {loading && (
-          <Flex justify="center" style={{ paddingTop: 80 }}>
-            <Spin tip="正在渲染合同正文…" />
+          <Flex justify="center" align="center" gap={8} style={{ paddingTop: 80 }}>
+            <Spin />
+            <Typography.Text type="secondary">正在渲染合同正文…</Typography.Text>
           </Flex>
         )}
         {!loading && !error && pdf && (

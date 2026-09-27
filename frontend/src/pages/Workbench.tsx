@@ -139,7 +139,10 @@ export default function Workbench() {
   if (contractQ.isLoading) {
     return (
       <Flex justify="center" align="center" style={{ height: "calc(100vh - 64px)" }}>
-        <Spin tip="加载合同…" />
+        <Flex align="center" gap={8}>
+          <Spin />
+          <Typography.Text type="secondary">加载合同…</Typography.Text>
+        </Flex>
       </Flex>
     );
   }
