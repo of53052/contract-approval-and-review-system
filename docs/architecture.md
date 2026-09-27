@@ -1049,6 +1049,10 @@ flowchart TD
 └───────────────────────────────────────────────────────────────┘
 ```
 
+**阶段一实现范围**：大盘页 + 工作台（上面前两张图）。
+**合规规则与模板页属阶段二**（§18.1 范围表）——阶段一规则库只读，
+通过 `GET /api/rules/*` 暴露数据，尚无编辑界面。
+
 ### 14.2 技术选型
 
 | 项 | 选择 | 理由 |
@@ -1057,7 +1061,7 @@ flowchart TD
 | 构建 | Vite | 开发期 HMR 快 |
 | UI 库 | Ant Design | 表格/表单/树控件直接吃下大盘页与规则页 |
 | 文档渲染 | **PDF.js** | 统一渲染，文本层 + 覆盖层 |
-| 状态管理 | 待定（Zustand 或 React Query） | 以服务端状态为主 |
+| 状态管理 | **React Query**（`@tanstack/react-query`） | 以服务端状态为主；审查进度轮询用 `refetchInterval` 即可，不必引全局 store |
 | 请求 | axios / fetch | — |
 
 ### 14.3 为什么统一用 PDF.js
@@ -1122,34 +1126,64 @@ flowchart TD
 
 ### 16.2 回归断言集设计
 
-为每份示例合同人工标注**期望风险点**：
+为每份示例合同人工标注**期望风险点**，落在 `samples/expected/*.expected.json`：
 
 ```json
 {
   "contract": "设备采购合同-高风险样本.docx",
+  "sample_dir": "purchase",
+  "business_type": "purchase",
+  "expected_overall": "high",
+  "expected_conclusion": "reject",
   "expected_risks": [
     {
       "title": "知识产权归属供应商",
+      "match_keywords": ["知识产权"],
       "risk_level": "high",
       "must_anchor": true,
-      "expected_anchor_page": 2
-    },
-    {
-      "title": "到货即付全款无验收条款",
-      "risk_level": "high",
-      "must_anchor": true
+      "expected_anchor_page": 1,
+      "expected_anchor_level": "exact",
+      "anchor_quote": "第八条知识产权本项目产生的知识产权归供应商所有。"
     }
-  ],
-  "expected_overall": "high"
+  ]
 }
 ```
 
+**为什么用 `match_keywords` 而不是 `title` 做匹配**：规则引擎用 `rule.name`，
+LLM 用自己的措辞，两者几乎不会一致（"违约责任无上限" vs "赔偿责任无上限"，
+实测标题相似度仅 0.42~0.84）。`title` 只用于报告展示，
+匹配判据是"实际风险项的 `title` / `reason` / `legal_basis` 拼接文本包含任一关键词"。
+
 **断言维度**
 
-- 风险点是否被识别（召回）
-- 风险等级是否正确
-- 锚点是否能定位到正确页码（`must_anchor`）
-- 综合风险等级是否正确
+| 维度 | 判据 |
+|---|---|
+| 风险点是否被识别（召回） | `match_keywords` 命中任一风险项 |
+| 风险等级是否正确 | `risk_level` 相等 |
+| 锚点是否定位到正确页码 | `must_anchor` 时 `page_no == expected_anchor_page` |
+| 锚点级别是否符合预期 | `anchor_level == expected_anchor_level` |
+| **锚点是否真的框住引用原文** | 用渲染用 PDF + PDF.js 实测 bbox 覆盖情况（`--verify-anchors`） |
+| 综合风险等级 / 结论 | 与 `expected_overall` / `expected_conclusion` 相等 |
+
+**锚点级别由规则类型决定**（实测规律）：
+
+- KEYWORD / REGEX / BLACKLIST 类规则能提取命中子串 → `exact`，覆盖整段引用
+- PRESENCE 类规则（"必须包含某模式"）没有命中子串 → `paragraph`，只覆盖条款标题块
+
+**最后一项为什么要走 PDF.js**：后端锚点由 PyMuPDF 产生，
+用 PyMuPDF 自校验是同源验证，测不出"前端坐标换算公式错"。
+实测该项曾抓到真实缺陷——用 `viewport.convertToViewportRectangle()`
+（假定左下原点、会翻转 y）时 6 个锚点只有 1 个落在引用文字上；
+改用左上原点直乘 scale 后 6/6 命中。
+
+**执行方式**
+
+```bash
+python scripts/run_tests.py                    # 只校验风险识别与等级
+python scripts/run_tests.py --verify-anchors   # 附加锚点坐标校验（需 node）
+```
+
+退出码 0 = 全部通过，可直接用于 CI 或提交前检查。
 
 ### 16.3 不做量化指标的理由
 
@@ -1172,8 +1206,11 @@ contract-approval-and-review-system/
 │
 ├── docs/
 │   ├── architecture.md            # 本文档
-│   ├── local-env.md               # 本地环境说明
-│   └── probe/                     # 技术验证脚本归档（23 个）
+│   ├── data-model.md              # 数据对象设计
+│   ├── data-layer-guide.md        # 数据层使用说明
+│   ├── review-engine.md           # 审查引擎说明
+│   ├── api-guide.md               # 后端 API 手册
+│   └── mock-approval.md           # mock 审批系统说明
 │
 ├── backend/                       # FastAPI · 原生运行
 │   ├── app/
@@ -1184,41 +1221,51 @@ contract-approval-and-review-system/
 │   │   ├── schemas/               # Pydantic 模型
 │   │   ├── services/
 │   │   │   ├── parsing/           # dispatcher / pdf / docx / ocr / anchor
-│   │   │   ├── review/            # rule_engine / llm_reviewer / merger
-│   │   │   └── llm/               # LLMProvider / OpenAICompat / Mock
-│   │   └── workers/               # 后台任务
-│   ├── tests/
+│   │   │   ├── review/            # clause_splitter / rule_engine / llm_reviewer
+│   │   │   │                      #   / merger / global_checker
+│   │   │   ├── llm/               # LLMProvider / OpenAICompat / Mock
+│   │   │   ├── approval/          # ApprovalSystemAdapter 抽象 + HTTP 实现
+│   │   │   ├── report_service.py  # 报告渲染与导出
+│   │   │   └── writeback_service.py  # 回写审批系统（幂等）
+│   │   └── workers/               # state_machine / pipeline
+│   ├── tests/                     # test_models / test_review_engine / test_api
+│   ├── alembic/                   # 数据库迁移
 │   └── pyproject.toml
 │
 ├── frontend/                      # React + Vite · 原生运行
 │   ├── src/
-│   │   ├── pages/                 # 大盘 / 工作台 / 规则
-│   │   ├── components/            # 文档视窗 / 风险卡片 / 协同回写
+│   │   ├── pages/                 # 大盘页 / 工作台
+│   │   ├── components/            # PdfViewer / RiskCard / WritebackBar
+│   │   ├── lib/                   # anchorCoords（锚点坐标换算，前后端契约唯一实现）
 │   │   ├── api/                   # 接口封装
-│   │   └── types/
+│   │   └── types/                 # 与后端 schemas 对应的类型
+│   ├── scripts/                   # verify_anchors.mjs（锚点坐标校验）
 │   └── package.json
 │
 ├── mock-approval/                 # mock 审批服务 · 独立
-│   └── app/
+│   ├── app/                       # FastAPI 应用（M1~M4）
+│   ├── data/                      # JSON 存储（待办 / 评论 / 附件）
+│   └── seed.py                    # 种子数据脚本
 │
 ├── samples/                       # 示例合同集
 │   ├── purchase/                  # 采购合同（含高风险用例）
-│   ├── sales/                     # 销售合同
-│   ├── labor/                     # 劳动合同
 │   └── expected/                  # 人工标注的期望风险点（断言集）
 │
 └── scripts/
     ├── check_env.py               # 环境自检
-    ├── gen_samples.py             # 示例合同生成器
-    └── run_tests.py               # 回归断言集执行
+    ├── check_consistency.py       # 数据一致性检查 C1~C8
+    ├── seed_data.py               # 规则库 / 示范条款 / 黑名单种子
+    └── run_tests.py               # 回归断言集执行器
 ```
 
 **目录划分原则**
 
 - `mock-approval/` **独立于 `backend/`**：它扮演"外部系统"，不应与后端共享代码，
   只通过 HTTP 契约耦合。将来换真实审批系统只改适配层。
-- `docs/probe/` 保留技术验证脚本：实测结论可复现，避免"凭记忆改参数"。
 - `samples/expected/` 与 `samples/` 并列：断言集是**一等公民**，不是附属物。
+- `frontend/src/lib/anchorCoords.ts` 是锚点坐标换算的**唯一实现**：
+  前端组件与 `frontend/scripts/verify_anchors.mjs` 共用它，
+  避免两处各写一份公式导致"校验通过但页面画错"。
 
 ---
 

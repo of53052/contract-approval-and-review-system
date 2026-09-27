@@ -1,0 +1,61 @@
+/* 全局样式：只放布局必需项，组件样式尽量走 antd token */
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+/* PDF 文本层：透明可选中，供高亮与反向定位使用 */
+.pdf-text-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  line-height: 1;
+  opacity: 1;
+}
+
+.pdf-text-layer > span {
+  position: absolute;
+  white-space: pre;
+  transform-origin: 0 0;
+  cursor: pointer;
+}
+
+/* 风险高亮：半透明底 + 描边，保证正文仍可读 */
+.pdf-highlight {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 2px;
+  transition: background-color 0.2s;
+}
+
+.pdf-highlight.level-high {
+  background: rgba(255, 77, 79, 0.28);
+  border: 1px solid rgba(255, 77, 79, 0.85);
+}
+
+.pdf-highlight.level-medium {
+  background: rgba(250, 173, 20, 0.28);
+  border: 1px solid rgba(250, 173, 20, 0.85);
+}
+
+.pdf-highlight.level-low {
+  background: rgba(82, 196, 26, 0.25);
+  border: 1px solid rgba(82, 196, 26, 0.8);
+}
+
+.pdf-highlight.active {
+  background: rgba(22, 119, 255, 0.35);
+  border: 1.5px solid #1677ff;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.25);
+}
+
+/* 风险卡片被正文反向定位时闪烁一下，帮助用户找到位置 */
+.risk-card-flash {
+  animation: risk-flash 1.2s ease-out;
+}
+
+@keyframes risk-flash {
+  0% { box-shadow: 0 0 0 0 rgba(22, 119, 255, 0.6); }
+  100% { box-shadow: 0 0 0 12px rgba(22, 119, 255, 0); }
+}
