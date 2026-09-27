@@ -9,7 +9,7 @@
 | 运行形态 | 基础设施容器化 + 前后端原生运行（**Windows**，原因见 [§4.1 部署形态](#41-部署形态)） |
 | 后端 | Python 3.12 / FastAPI |
 | 前端 | Node 18+ / React 18 / Vite 5 |
-| 许可证 | 未声明，见 [§15 维护信息](#15-维护信息) |
+| 许可证 | MIT，见 [LICENSE](LICENSE) |
 
 ## 目录
 
@@ -414,6 +414,7 @@ contract-approval-and-review-system/
 |-- ACCEPTANCE.md                PRD 验收报告（实跑取证）
 |-- AGENTS.md                    开发规范
 |-- README.md                    本文档
+|-- LICENSE                      MIT 许可证
 |-- compose.yml                  基础设施编排（mysql / redis / minio）
 |-- .env / .env.example          环境变量
 |
@@ -609,5 +610,5 @@ npm run build        # 生产构建
 | 提交规范 | `feat` / `fix` / `docs` / `chore` + 范围 + 中文说明 |
 | 分支命名 | `codex/<主题>` |
 | 问题反馈 | 仓库 Issues |
-| 许可证 | **未声明**：仓库当前无 `LICENSE` 文件，默认保留全部权利。如需开源或对外分发，请先补充许可证文件 |
+| 许可证 | MIT（见 [`LICENSE`](LICENSE)），Copyright (c) 2026 of53052 |
 | 版本号唯一来源 | `backend/app/__init__.py` 的 `__version__`；`pyproject.toml` 经 `[tool.hatch.version]` 动态读取，`app/main.py` 与 `/health` 从此导入。`frontend/package.json` 与 `mock-approval` 为独立服务，手动对齐同一版本号 |
