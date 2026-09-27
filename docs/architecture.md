@@ -1318,7 +1318,8 @@ gantt
 | 前端：大盘页 + 工作台 | 规则配置页 |
 | mock 审批服务 | PDF 报告精排 |
 | 1 个示例合同端到端（设备采购，DOCX） | 其余示例合同（销售/劳动） |
-| 回归断言集（1 份合同） | blocked 重试的 UI |
+| 回归断言集（1 份合同） | 批量审查 |
+| blocked 重试（工作台内，`POST /api/tasks/{id}/retry`） | 用户角色与权限 |
 
 **为什么先做设备采购合同**：PRD 2.4.9 只要求"至少一个场景"，而设备采购合同
 同时覆盖"知识产权归属"与"付款无验收"两个高风险点，演示效果最完整。
@@ -1329,8 +1330,27 @@ gantt
 - 扫描件 OCR 链路接入 + 缓存
 - 其余示例合同（销售 / 劳动）+ 完整断言集
 - PDF 报告精排
-- blocked 重试 UI
 - 批量审查（届时评估迁 Celery）
+- 大盘页的导出记录列表 UI（接口已就绪：`GET /api/contracts/{id}/report/exports`）
+
+> ⚠️ **`blocked 重试 UI` 已不在本清单**：原计划推阶段二，实际随工作台一并交付
+> （`Workbench.tsx` 的阻塞告警条 + 重试按钮），清单曾滞后于实现。
+
+#### 18.2.1 阶段二·批次 5（已交付：PRD 补齐）
+
+PRD §2.4.3 / §2.4.5 点名但阶段一范围表未列出的三项，以及两处元数据缺口：
+
+| 项 | PRD 出处 | 实现位置 |
+|---|---|---|
+| 元数据字段高亮 | §2.4.3「高亮标记风险条款**与提取的元数据字段**」 | `anchor.owner_type='contract_metadata'`（§5.7 的多态设计本已规划）；区间取自正则捕获组，`pipeline._save_metadata` 写入；`PdfViewer` 虚线框渲染 |
+| 条款差异对比 | §2.4.5 风险卡片模块 | `lib/textDiff.ts`（自写 LCS，不引第三方）+ `RiskCard` 折叠面板 |
+| 修改建议一键复制 | §2.4.5 风险卡片模块 | `RiskCard.copySuggestion`，含 `execCommand` 兜底 |
+| 生效条件提取 | §2.4.4「生效条件」 | `clause_splitter._EFFECTIVE_CONDITION_RE` |
+| 条款正文下发 | 支撑差异对比 | `RiskItemOut.clause_content`（避免前端二次拉取条款列表） |
+
+**为什么差异对比不引第三方**：只需"并排标出增删"一个能力，
+`diff-match-patch` 等库会为几十行逻辑增加依赖与供应链风险（AGENTS.md 约定）。
+超过 `MAX_CELLS` 时退化为整段替换，避免大条款卡住主线程。
 
 ---
 

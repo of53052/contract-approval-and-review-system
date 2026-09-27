@@ -1,10 +1,10 @@
 /**
  * 风险卡片（架构 §14.1 图二右栏）。
  *
- * 展示：等级 / 标题 / 成因 / 法律依据 / AI 建议（可编辑）/ 依据链（双来源留痕）。
- * 交互：点击卡片 → 正文定位；采纳 / 编辑建议 → PATCH。
+ * 展示：等级 / 标题 / 成因 / 法律依据 / 条款差异对比 / AI 建议（可编辑）/ 依据链。
+ * 交互：点击卡片 → 正文定位；采纳 / 编辑 / 复制建议；PATCH 落库。
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Card,
@@ -18,18 +18,48 @@ import {
   Typography,
   App as AntApp,
 } from "antd";
-import { EditOutlined, ReloadOutlined } from "@ant-design/icons";
+import { CopyOutlined, EditOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { updateRisk } from "../api";
 import { apiError } from "../api/client";
 import type { RiskItem } from "../types";
 import { CATEGORY_LABEL, RISK_META } from "../constants";
+import { diffChars } from "../lib/textDiff";
 
 interface Props {
   risk: RiskItem;
   active: boolean;
   flash: boolean;
   onLocate: (risk: RiskItem) => void;
+}
+
+/** 条款差异对比：原文（红底删除线）↔ 建议（绿底）逐字对比。 */
+function ClauseDiff({ before, after }: { before: string | null; after: string | null }) {
+  const segments = useMemo(
+    () => (before || after ? diffChars(before ?? "", after ?? "") : []),
+    [before, after],
+  );
+  if (!segments.length) {
+    return <Typography.Text type="secondary">（无可对比内容）</Typography.Text>;
+  }
+  return (
+    <div className="clause-diff">
+      <Flex gap={6} style={{ marginBottom: 4 }}>
+        <Tag color="error" style={{ marginInlineEnd: 0 }}>原文</Tag>
+        <Tag color="success" style={{ marginInlineEnd: 0 }}>建议</Tag>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          逐字对比，红删绿增
+        </Typography.Text>
+      </Flex>
+      <Typography.Paragraph style={{ marginBottom: 0, fontSize: 12 }}>
+        {segments.map((seg, i) => {
+          if (seg.kind === "same") return <span key={i}>{seg.text}</span>;
+          if (seg.kind === "del") return <del key={i} className="diff-del">{seg.text}</del>;
+          return <ins key={i} className="diff-add">{seg.text}</ins>;
+        })}
+      </Typography.Paragraph>
+    </div>
+  );
 }
 
 const MERGED_BY_LABEL: Record<RiskItem["merged_by"], string> = {
@@ -65,6 +95,38 @@ export default function RiskCard({ risk, active, flash, onLocate }: Props) {
     },
     onError: (e) => message.error(apiError(e)),
   });
+
+  /** 一键复制修改建议（PRD 2.4.5）。
+   *
+   * `navigator.clipboard` 只在安全上下文（https / localhost）可用；
+   * 演示环境是 localhost 没问题，但局域网 IP 访问会退化。
+   * 因此保留 `execCommand` 兜底，而不是让复制按钮在 http 下静默失效。
+   */
+  const copySuggestion = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const text = shownSuggestion ?? "";
+    if (!text.trim()) {
+      message.warning("暂无建议可复制");
+      return;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      message.success("修改建议已复制");
+    } catch (err) {
+      message.error(`复制失败：${err instanceof Error ? err.message : "浏览器拒绝访问剪贴板"}`);
+    }
+  };
 
   const meta = RISK_META[risk.risk_level];
   const anchor = risk.anchors[0];
@@ -173,6 +235,14 @@ export default function RiskCard({ risk, active, flash, onLocate }: Props) {
                 </Button>
                 <Button
                   size="small"
+                  icon={<CopyOutlined />}
+                  disabled={!shownSuggestion}
+                  onClick={copySuggestion}
+                >
+                  复制
+                </Button>
+                <Button
+                  size="small"
                   type={risk.adopted ? "default" : "primary"}
                   loading={saveMut.isPending}
                   onClick={(e) => {
@@ -196,6 +266,22 @@ export default function RiskCard({ risk, active, flash, onLocate }: Props) {
                 )}
               </Flex>
             </Space>
+          )}
+
+          {(risk.clause_content || shownSuggestion) && (
+            <div onClick={(e) => e.stopPropagation()}>
+              <Collapse
+                size="small"
+                ghost
+                items={[
+                  {
+                    key: "diff",
+                    label: "条款差异对比",
+                    children: <ClauseDiff before={risk.clause_content} after={shownSuggestion} />,
+                  },
+                ]}
+              />
+            </div>
           )}
 
           {risk.evidences.length > 0 && (

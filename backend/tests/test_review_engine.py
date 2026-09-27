@@ -44,7 +44,11 @@ from app.models.enums import (
 )
 from app.services.parsing.anchor_builder import AnchorBuilder
 from app.services.parsing.types import BlockKind, CharBox, DocumentText, PageText, ParsedBlock
-from app.services.review.clause_splitter import ClauseDraft, MetadataDraft
+from app.services.review.clause_splitter import (
+    ClauseDraft,
+    MetadataDraft,
+    extract_metadata,
+)
 from app.services.review.global_checker import HallucinationGate
 from app.services.review.llm_reviewer import LlmRiskDraft
 from app.services.review.merger import Merger
@@ -691,3 +695,77 @@ def test_pipeline_rerun_is_idempotent(db: Session) -> None:
         WHERE ri.id IS NULL AND cm.id IS NULL
     """)).scalar()
     assert orphans == 0
+
+
+# ==================== 元数据提取（批次 5）====================
+
+def test_extract_effective_condition() -> None:
+    """生效条件必须被提取（PRD 2.4.4 点名的核心元数据）。
+
+    三种常见写法都要覆盖：自…之日起生效 / 自…后生效 / 经…后生效。
+    """
+    for text, expected in [
+        ("本合同自双方签字盖章之日起生效。", "双方签字盖章"),
+        ("本合同自双方签字并加盖公章后生效。", "双方签字并加盖公章"),
+        ("本合同经双方授权代表签署后生效。", "双方授权代表签署"),
+    ]:
+        metas = {m.meta_key: m for m in extract_metadata(_make_doc(text))}
+        assert MetadataKey.EFFECTIVE_CONDITION in metas, f"未提取到生效条件: {text}"
+        assert metas[MetadataKey.EFFECTIVE_CONDITION].meta_value == expected
+
+
+def test_extract_effective_condition_does_not_false_positive() -> None:
+    """「合同期限：自…起至…止」不是生效条件，不得误捕。
+
+    回归缺陷：早期正则只要求「自…起」，把履约期限也当成了生效条件。
+    """
+    text = "合同期限：自2026 年10 月1 日起至2027 年9 月30 日止。"
+    metas = {m.meta_key for m in extract_metadata(_make_doc(text))}
+    assert MetadataKey.EFFECTIVE_CONDITION not in metas
+    # 期限本身仍要正常提取
+    assert MetadataKey.TERM in metas
+
+
+def test_metadata_carries_char_span() -> None:
+    """元数据要带全文字符区间，且区间精确指向取值本身。
+
+    区间是元数据锚点的唯一来源，错一位就会框错字。
+    """
+    text = "合同编号：CG-2026-0912\n甲方（采购方）：某某科技有限公司"
+    metas = {m.meta_key: m for m in extract_metadata(_make_doc(text))}
+
+    m = metas[MetadataKey.CONTRACT_NO]
+    assert m.char_start is not None and m.char_end is not None
+    assert text[m.char_start:m.char_end] == "CG-2026-0912"
+
+    a = metas[MetadataKey.PARTY_A_NAME]
+    assert text[a.char_start:a.char_end] == "某某科技有限公司"
+
+
+def test_metadata_span_distinguishes_duplicate_values() -> None:
+    """同一取值在原文出现多次时，区间必须各指其位。
+
+    回归缺陷：若用 `locate(取值)` 反查会锚到**第一处**，
+    甲乙双方同名时后一个锚点就错位了。
+    """
+    text = "甲方：某某科技有限公司\n乙方：某某科技有限公司"
+    metas = {m.meta_key: m for m in extract_metadata(_make_doc(text))}
+    a = metas[MetadataKey.PARTY_A_NAME]
+    b = metas[MetadataKey.PARTY_B_NAME]
+    assert a.char_start != b.char_start, "同名主体的区间不应重合"
+    assert text[a.char_start:a.char_end] == "某某科技有限公司"
+    assert text[b.char_start:b.char_end] == "某某科技有限公司"
+    assert b.char_start > a.char_start
+
+
+def test_locate_span_rejects_invalid_range() -> None:
+    """区间非法时返回 None，绝不产出越界锚点。"""
+    doc = _make_doc("短文本。")
+    builder = AnchorBuilder(doc)
+    assert builder.locate_span(0, 0) is None          # 空区间
+    assert builder.locate_span(5, 2) is None          # 倒置
+    assert builder.locate_span(-1, 3) is None         # 负值
+    assert builder.locate_span(0, 9999) is None       # 越界
+    ok = builder.locate_span(0, 3)
+    assert ok is not None and ok.anchored
+    assert ok.level is AnchorLevel.EXACT

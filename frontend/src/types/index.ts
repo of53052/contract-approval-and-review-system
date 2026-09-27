@@ -54,6 +54,19 @@ export interface ContractDetail extends ContractListItem {
   summary: string | null;
 }
 
+/** 元数据项（`GET /api/contracts/{id}/metadata`）。
+ * `anchors` 是该字段在原文中的位置，供正文区高亮（PRD 2.4.3）。 */
+export interface ContractMetadataItem {
+  id: number;
+  meta_key: string;
+  meta_value: string | null;
+  value_normalized: string | null;
+  value_type: string;
+  confidence: number;
+  need_review: boolean;
+  anchors: Anchor[];
+}
+
 export interface Clause {
   id: number;
   clause_type: string;
@@ -113,6 +126,8 @@ export interface RiskItem {
   unanchored: boolean;
   seq: number;
   clause_id: number | null;
+  /** 命中条款原文，供"条款差异对比"展示原文侧 */
+  clause_content: string | null;
   anchors: Anchor[];
   evidences: Evidence[];
 }

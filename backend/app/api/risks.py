@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.models import Anchor, Annotation, Contract, RiskEvidence, RiskItem
+from app.models import Anchor, Annotation, Clause, Contract, RiskEvidence, RiskItem
 from app.schemas import (
     AnchorOut,
     AnnotationIn,
@@ -28,6 +28,7 @@ def _to_risk_out(
     r: RiskItem,
     anchors: list[Anchor],
     evidences: list[RiskEvidence],
+    clause_content: str | None = None,
 ) -> RiskItemOut:
     return RiskItemOut(
         id=r.id, title=r.title, risk_level=r.risk_level, category=r.category,
@@ -35,6 +36,7 @@ def _to_risk_out(
         suggestion_edited=r.suggestion_edited, adopted=bool(r.adopted),
         merged_by=r.merged_by, is_global=bool(r.is_global),
         unanchored=bool(r.unanchored), seq=r.seq, clause_id=r.clause_id,
+        clause_content=clause_content,
         anchors=[
             AnchorOut(
                 id=a.id, page_no=a.page_no, bbox_x0=a.bbox_x0, bbox_y0=a.bbox_y0,
@@ -92,8 +94,20 @@ def list_risks(
     ).scalars():
         evidences.setdefault(e.risk_item_id, []).append(e)
 
+    # 条款正文：差异对比要展示原文，一次查完（同样避免 N+1）
+    clause_ids = [r.clause_id for r in risks if r.clause_id is not None]
+    clause_contents: dict[int, str] = {}
+    if clause_ids:
+        for cid, content in db.execute(
+            select(Clause.id, Clause.content).where(Clause.id.in_(clause_ids))
+        ):
+            clause_contents[cid] = content
+
     return [
-        _to_risk_out(r, anchors.get(r.id, []), evidences.get(r.id, []))
+        _to_risk_out(
+            r, anchors.get(r.id, []), evidences.get(r.id, []),
+            clause_contents.get(r.clause_id) if r.clause_id else None,
+        )
         for r in risks
     ]
 
@@ -111,7 +125,12 @@ def get_risk(risk_id: int, db: Session = Depends(get_db)) -> RiskItemOut:
     evidences = list(db.execute(
         select(RiskEvidence).where(RiskEvidence.risk_item_id == r.id)
     ).scalars())
-    return _to_risk_out(r, anchors, evidences)
+    clause_content = None
+    if r.clause_id is not None:
+        clause_content = db.execute(
+            select(Clause.content).where(Clause.id == r.clause_id)
+        ).scalar()
+    return _to_risk_out(r, anchors, evidences, clause_content)
 
 
 @router.patch("/{risk_id}", response_model=RiskItemOut, summary="编辑风险项（法务）")
@@ -149,7 +168,12 @@ def update_risk(
     evidences = list(db.execute(
         select(RiskEvidence).where(RiskEvidence.risk_item_id == r.id)
     ).scalars())
-    return _to_risk_out(r, anchors, evidences)
+    clause_content = None
+    if r.clause_id is not None:
+        clause_content = db.execute(
+            select(Clause.content).where(Clause.id == r.clause_id)
+        ).scalar()
+    return _to_risk_out(r, anchors, evidences, clause_content)
 
 
 @router.post("/annotations", response_model=AnnotationOut, summary="新增法务批注")

@@ -7,6 +7,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.risks import AnchorOut
+
 
 class ContractListItem(BaseModel):
     """大盘页列表项。
@@ -76,7 +78,12 @@ class ClauseOut(BaseModel):
 
 
 class MetadataOut(BaseModel):
-    """元数据项。`need_review` 供前端高亮待核对。"""
+    """元数据项。`need_review` 供前端高亮待核对。
+
+    `anchors` 是该元数据在原文中的位置，供工作台"高亮标记提取的
+    元数据字段"（PRD 2.4.3）。为空表示该字段未锚定到原文
+    （如从表格或 OCR 提取、坐标不可靠），前端只做文字提示不高亮。
+    """
 
     id: int
     meta_key: str
@@ -85,6 +92,7 @@ class MetadataOut(BaseModel):
     value_type: str
     confidence: float
     need_review: bool
+    anchors: list[AnchorOut] = Field(default_factory=list)
 
 
 class TaskEventOut(BaseModel):

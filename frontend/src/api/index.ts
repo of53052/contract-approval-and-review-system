@@ -5,6 +5,7 @@ import type {
   Clause,
   ContractDetail,
   ContractListItem,
+  ContractMetadataItem,
   Page,
   ExportRecord,
   ReportPreview,
@@ -35,6 +36,9 @@ export const deleteContract = async (id: number) =>
 
 export const listClauses = async (id: number): Promise<Clause[]> =>
   (await api.get(`/api/contracts/${id}/clauses`)).data;
+
+export const listMetadata = async (id: number): Promise<ContractMetadataItem[]> =>
+  (await api.get(`/api/contracts/${id}/metadata`)).data;
 
 export const listEvents = async (id: number): Promise<TaskEvent[]> =>
   (await api.get(`/api/contracts/${id}/events`)).data;

@@ -71,6 +71,67 @@ body {
   box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.25);
 }
 
+/* 元数据字段高亮：虚线细框 + 上方小标签
+ *
+ * 与风险高亮（半透明实底）刻意区分：元数据是"提取到的信息"而非"问题"，
+ * 用中性蓝虚线表达，避免用户误以为是风险标记。
+ * 层级低于风险框（z-index:2），被风险覆盖时仍能看到虚线边缘。
+ */
+.pdf-meta-highlight {
+  position: absolute;
+  pointer-events: none;
+  border: 1px dashed rgba(22, 119, 255, 0.75);
+  border-radius: 2px;
+  background: rgba(22, 119, 255, 0.06);
+  z-index: 2;
+}
+
+.pdf-meta-label {
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: #fff;
+  background: rgba(22, 119, 255, 0.85);
+  border-radius: 2px 2px 2px 0;
+  padding: 0 3px;
+  transform: translateY(1px);
+}
+
+/* 头部图例小方块：与正文里的元数据虚线框同款，建立视觉对应 */
+.pdf-meta-legend {
+  display: inline-block;
+  width: 12px;
+  height: 8px;
+  margin-right: 4px;
+  vertical-align: middle;
+  border: 1px dashed rgba(22, 119, 255, 0.75);
+  background: rgba(22, 119, 255, 0.06);
+}
+
+/* 条款差异对比：红删绿增，与 antd 的 error/success 语义色一致 */
+.clause-diff {
+  background: #fafafa;
+  border-radius: 4px;
+  padding: 8px;
+  line-height: 1.7;
+  word-break: break-all;
+}
+
+.diff-del {
+  background: rgba(255, 77, 79, 0.14);
+  color: #a8071a;
+  text-decoration: line-through;
+}
+
+.diff-add {
+  background: rgba(82, 196, 26, 0.16);
+  color: #237804;
+  text-decoration: none;
+}
+
 /* 风险卡片被正文反向定位时闪烁一下，帮助用户找到位置 */
 .risk-card-flash {
   animation: risk-flash 1.2s ease-out;

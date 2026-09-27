@@ -58,7 +58,7 @@ FastAPI 统一返回：
 | POST | `/api/contracts/upload` | 上传合同（multipart）；`auto_review=true` 时立即启动审查 |
 | DELETE | `/api/contracts/{id}` | 软删除 |
 | GET | `/api/contracts/{id}/clauses` | 条款列表（工作台左栏） |
-| GET | `/api/contracts/{id}/metadata` | 提取的元数据 |
+| GET | `/api/contracts/{id}/metadata` | 提取的元数据（含 `anchors`，供正文高亮字段位置） |
 | GET | `/api/contracts/{id}/events` | 任务事件轨迹（审计） |
 | GET | `/api/contracts/{id}/parse-results` | 解析历史（重试后 `attempt` 递增） |
 | GET | `/api/contracts/{id}/pdf` | **渲染用 PDF**（DOCX 返回转换产物，PDF 返回原件） |
@@ -87,13 +87,17 @@ FastAPI 统一返回：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/risks?contract_id=` | 风险清单（含锚点与依据链，一次查完避免 N+1） |
+| GET | `/api/risks?contract_id=` | 风险清单（含锚点、依据链与 `clause_content`，一次查完避免 N+1） |
 | GET | `/api/risks/{id}` | 风险详情 |
 | PATCH | `/api/risks/{id}` | 法务编辑建议 / 标记采纳 |
 | POST | `/api/risks/annotations` | 新增法务批注 |
 | GET | `/api/risks/annotations/list?contract_id=` | 批注列表 |
 
 **不变量 I4**：`suggestion_edited` 非空 ⟹ `adopted = 1`。
+
+**`clause_content` 为什么随风险项一起下发**：工作台的"条款差异对比"（PRD 2.4.5）
+要展示"原文 ↔ 建议"。若前端另拉 `/clauses` 再按 `clause_id` 反查，
+每个合同都会多一次请求且需在前端维护索引；一次查完更省。
 后端在 PATCH 里显式维护，调用方不必传对：
 
 ```jsonc

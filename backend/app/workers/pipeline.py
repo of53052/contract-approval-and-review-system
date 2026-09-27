@@ -53,6 +53,7 @@ from app.models.enums import (
     TaskStatus,
 )
 from app.services.llm import LLMProvider, get_provider
+from app.services.parsing.anchor_builder import AnchorBuilder
 from app.services.parsing.dispatcher import ParseBlocked, parse_document
 from app.services.review.clause_splitter import split_document
 from app.services.review.global_checker import HallucinationGate, check_global
@@ -155,7 +156,9 @@ class Pipeline:
         split = split_document(outcome.doc)
         parse_result = self._latest_parse_result()
         self._save_clauses(split.clauses, parse_result.id)
-        self._save_metadata(split.metadata, parse_result.id)
+        self._save_metadata(
+            split.metadata, parse_result.id, outcome.build_anchor_builder()
+        )
         # 把元数据回填到 contract 冗余字段：大盘页与报告"合同基本信息"直接读它，
         # 避免列表页为了显示金额/编号再关联 contract_metadata（原则 P4）
         self._backfill_contract_fields(contract, split.metadata)
@@ -370,9 +373,20 @@ class Pipeline:
                 source=c.source,
             ))
 
-    def _save_metadata(self, metadata, parse_result_id: int) -> None:
+    def _save_metadata(
+        self, metadata, parse_result_id: int, builder: AnchorBuilder
+    ) -> None:
+        """写入元数据，并为其建立锚点。
+
+        锚点用 `owner_type='contract_metadata'`（docs/data-model.md §5.7
+        的多态设计），支撑工作台"高亮标记提取的元数据字段"（PRD 2.4.3）。
+
+        **区间来自提取时的正则捕获组**，不是事后重新搜索——同一取值在
+        原文出现多次时（如"某某科技有限公司"同时是甲乙方），重新搜索会
+        锚到第一处，导致高亮框住错误位置。
+        """
         for m in metadata:
-            self.db.add(ContractMetadata(
+            row = ContractMetadata(
                 contract_id=self.task.contract_id,
                 parse_result_id=parse_result_id,
                 meta_key=m.meta_key.value,
@@ -381,6 +395,36 @@ class Pipeline:
                 value_type=m.value_type,
                 confidence=m.confidence,
                 need_review=1 if m.need_review else 0,
+            )
+            self.db.add(row)
+            self.db.flush()  # 需要 row.id 作为 anchor.owner_id
+
+            # 元数据没有可定位区间时不写锚点行（与风险项同一不变量：
+            # 无法锚定就不写，绝不伪造位置）
+            if m.char_start is None or m.char_end is None:
+                continue
+            anchor = builder.locate_span(m.char_start, m.char_end)
+            if anchor is None or not anchor.anchored:
+                logger.info(
+                    "元数据 %s 无法锚定原文，跳过写锚点: %r",
+                    m.meta_key.value, m.meta_value,
+                )
+                continue
+            self.db.add(Anchor(
+                owner_type="contract_metadata",
+                owner_id=row.id,
+                seq=0,
+                page_no=anchor.page_no,
+                bbox_x0=anchor.bbox[0],
+                bbox_y0=anchor.bbox[1],
+                bbox_x1=anchor.bbox[2],
+                bbox_y1=anchor.bbox[3],
+                char_start=anchor.char_start,
+                char_end=anchor.char_end,
+                quote_text=anchor.quote_text,
+                source=anchor.source.value,
+                anchor_level=anchor.level.value,
+                confidence=anchor.confidence,
             ))
 
     def _backfill_contract_fields(self, contract, metadata) -> None:

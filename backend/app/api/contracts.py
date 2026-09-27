@@ -16,6 +16,7 @@ from app.api.deps import get_db
 from app.core.config import settings
 from app.core.minio_client import get_minio, path_original
 from app.models import (
+    Anchor,
     Clause,
     Contract,
     ContractMetadata,
@@ -31,6 +32,7 @@ from app.models.enums import (
     WritebackStatus,
 )
 from app.schemas import (
+    AnchorOut,
     ClauseOut,
     ContractDetail,
     ContractListItem,
@@ -301,16 +303,40 @@ def list_clauses(contract_id: int, db: Session = Depends(get_db)) -> list[Clause
 
 @router.get("/{contract_id}/metadata", response_model=list[MetadataOut], summary="元数据列表")
 def list_metadata(contract_id: int, db: Session = Depends(get_db)) -> list[MetadataOut]:
-    """合同元数据。前端据此高亮"提取的元数据字段"。"""
+    """合同元数据。前端据此高亮"提取的元数据字段"。
+
+    一次查完锚点，**避免 N+1**（同 `list_risks` 的处理）。
+    """
     _ensure_contract(db, contract_id)
-    rows = db.execute(
+    rows = list(db.execute(
         select(ContractMetadata).where(ContractMetadata.contract_id == contract_id)
-    ).scalars()
+    ).scalars())
+    if not rows:
+        return []
+
+    ids = [m.id for m in rows]
+    anchors: dict[int, list[Anchor]] = {}
+    for a in db.execute(
+        select(Anchor).where(
+            Anchor.owner_type == "contract_metadata", Anchor.owner_id.in_(ids)
+        ).order_by(Anchor.owner_id, Anchor.seq)
+    ).scalars():
+        anchors.setdefault(a.owner_id, []).append(a)
+
     return [
         MetadataOut(
             id=m.id, meta_key=m.meta_key, meta_value=m.meta_value,
             value_normalized=m.value_normalized, value_type=m.value_type,
             confidence=m.confidence, need_review=bool(m.need_review),
+            anchors=[
+                AnchorOut(
+                    id=a.id, page_no=a.page_no, bbox_x0=a.bbox_x0, bbox_y0=a.bbox_y0,
+                    bbox_x1=a.bbox_x1, bbox_y1=a.bbox_y1, char_start=a.char_start,
+                    char_end=a.char_end, quote_text=a.quote_text, source=a.source,
+                    anchor_level=a.anchor_level, confidence=a.confidence,
+                )
+                for a in anchors.get(m.id, [])
+            ],
         )
         for m in rows
     ]

@@ -24,8 +24,9 @@ import { ZoomInOutlined, ZoomOutOutlined } from "@ant-design/icons";
 import * as pdfjsLib from "pdfjs-dist";
 import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
-import type { RiskItem } from "../types";
+import type { ContractMetadataItem, RiskItem } from "../types";
 import { anchorToPixelBox, textSpanBox } from "../lib/anchorCoords";
+import { METADATA_LABEL } from "../constants";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
 
@@ -34,6 +35,8 @@ interface Props {
   contractId: number;
   /** 风险清单；只画有锚点的项 */
   risks: RiskItem[];
+  /** 元数据清单；只画有锚点的项（PRD 2.4.3「高亮标记提取的元数据字段」） */
+  metadata?: ContractMetadataItem[];
   /** 当前聚焦的锚点（来自右侧卡片点击） */
   focusAnchor: { riskId: number; pageNo: number; bbox: number[] } | null;
   /** 正文 → 卡片：点中某风险的高亮 */
@@ -50,7 +53,23 @@ interface HighlightBox {
   height: number;
 }
 
-export default function PdfViewer({ contractId, risks, focusAnchor, onPickRisk }: Props) {
+/** 一页的元数据盒子（已换算为像素） */
+interface MetaBox {
+  metaId: number;
+  label: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export default function PdfViewer({
+  contractId,
+  risks,
+  metadata,
+  focusAnchor,
+  onPickRisk,
+}: Props) {
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
   const [pageCount, setPageCount] = useState(0);
   const [scale, setScale] = useState(1.25);
@@ -95,15 +114,28 @@ export default function PdfViewer({ contractId, risks, focusAnchor, onPickRisk }
     }
   }, [focusAnchor]);
 
+  // 有锚点的元数据项数量（用于头部图例）
+  const metaCount = useMemo(
+    () => (metadata ?? []).filter((m) => m.anchors.length > 0).length,
+    [metadata],
+  );
+
   const zoom = (delta: number) =>
     setScale((s) => Math.min(3, Math.max(0.5, +(s + delta).toFixed(2))));
 
   return (
     <Flex vertical style={{ height: "100%" }} gap={8}>
       <Flex justify="space-between" align="center" style={{ paddingInline: 4 }}>
-        <Typography.Text type="secondary">
-          {loading ? "加载中…" : `${pageCount} 页 · 缩放 ${Math.round(scale * 100)}%`}
-        </Typography.Text>
+        <Flex align="center" gap={8}>
+          <Typography.Text type="secondary">
+            {loading ? "加载中…" : `${pageCount} 页 · 缩放 ${Math.round(scale * 100)}%`}
+          </Typography.Text>
+          {metaCount > 0 && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              <span className="pdf-meta-legend" /> 提取字段 {metaCount} 项
+            </Typography.Text>
+          )}
+        </Flex>
         <Flex gap={4} align="center">
           <Button size="small" icon={<ZoomOutOutlined />} onClick={() => zoom(-0.15)} />
           <InputNumber
@@ -154,6 +186,7 @@ export default function PdfViewer({ contractId, risks, focusAnchor, onPickRisk }
                 pageNo={pageNo}
                 scale={scale}
                 risks={risks}
+                metadata={metadata}
                 activeRiskId={focusAnchor?.riskId ?? null}
                 onPickRisk={onPickRisk}
                 registerRef={(el) => {
@@ -176,6 +209,7 @@ function PdfPage({
   pageNo,
   scale,
   risks,
+  metadata,
   activeRiskId,
   onPickRisk,
   registerRef,
@@ -184,6 +218,7 @@ function PdfPage({
   pageNo: number;
   scale: number;
   risks: RiskItem[];
+  metadata?: ContractMetadataItem[];
   activeRiskId: number | null;
   onPickRisk: (riskId: number) => void;
   registerRef: (el: HTMLDivElement | null) => void;
@@ -287,6 +322,30 @@ function PdfPage({
     return out;
   }, [page, scale, risks, pageNo]);
 
+  // 计算本页的元数据盒子（像素坐标）。
+  //
+  // 与风险高亮分开渲染：元数据用**虚线细框 + 上方小标签**，风险用半透明
+  // 实底。两者可重叠（如"合同金额"落在"付款方式"条款内），视觉上必须能区分，
+  // 否则用户分不清哪个是风险、哪个只是提取到的字段。
+  const metaBoxes = useMemo<MetaBox[]>(() => {
+    if (!page || !metadata?.length) return [];
+    const viewport = page.getViewport({ scale });
+    const [vx0, vy0] = viewport.viewBox;
+    const out: MetaBox[] = [];
+    for (const m of metadata) {
+      for (const a of m.anchors) {
+        if (a.page_no !== pageNo) continue;
+        const box = anchorToPixelBox(
+          [a.bbox_x0, a.bbox_y0, a.bbox_x1, a.bbox_y1],
+          scale,
+          [vx0, vy0, vx0 + viewport.width / scale, vy0 + viewport.height / scale],
+        );
+        out.push({ metaId: m.id, label: METADATA_LABEL[m.meta_key] || m.meta_key, ...box });
+      }
+    }
+    return out;
+  }, [page, scale, metadata, pageNo]);
+
   // 文本层点击 → 命中最近的高亮框 → 反向定位卡片
   const onTextClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -319,6 +378,21 @@ function PdfPage({
     >
       <canvas ref={canvasRef} style={{ display: "block" }} />
       <div className="pdf-text-layer" ref={textRef} onClick={onTextClick} />
+      {metaBoxes.map((b, i) => (
+        <div
+          key={`meta-${b.metaId}-${i}`}
+          className="pdf-meta-highlight"
+          style={{
+            left: b.left,
+            top: b.top,
+            width: b.width,
+            height: b.height,
+          }}
+          title={`提取字段：${b.label}`}
+        >
+          <span className="pdf-meta-label">{b.label}</span>
+        </div>
+      ))}
       {boxes.map((b, i) => (
         <div
           key={`${b.riskId}-${i}`}

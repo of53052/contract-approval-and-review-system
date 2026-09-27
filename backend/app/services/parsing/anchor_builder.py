@@ -148,6 +148,29 @@ class AnchorBuilder:
                 )
         return AnchorResult(level=AnchorLevel.NONE, source=AnchorSource.NATIVE_TEXT)
 
+    def locate_span(self, char_start: int, char_end: int) -> AnchorResult | None:
+        """按**已知的全文字符区间**构造精确锚点。
+
+        与 `locate()` 的区别：这里不做文本匹配，区间由调用方保证正确。
+        元数据提取时正则已给出精确的捕获组区间，若改用 `locate(取值)`
+        重新搜索，同一取值在原文出现多次时会锚到**第一个**位置——
+        例如"某某科技有限公司"在甲乙双方行都出现时就会错位。
+
+        返回 None 表示区间无效（越界/全空白），调用方应跳过写锚点。
+        """
+        if char_start is None or char_end is None or char_start >= char_end:
+            return None
+        if char_start < 0 or char_end > len(self._full_text):
+            logger.warning(
+                "元数据区间越界，跳过锚定: [%s, %s) 全文长度 %s",
+                char_start, char_end, len(self._full_text),
+            )
+            return None
+        return self._from_real_range(
+            char_start, char_end, quote="", level=AnchorLevel.EXACT,
+            source=AnchorSource.NATIVE_TEXT, confidence=None,
+        )
+
     def locate_clause(self, quote: str) -> list[AnchorResult]:
         """整条条款的锚点：按页切分，每页产出一个段落级锚点。
 

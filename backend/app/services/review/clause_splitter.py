@@ -69,7 +69,13 @@ class ClauseDraft:
 
 @dataclass
 class MetadataDraft:
-    """提取出的元数据项（未落库）。"""
+    """提取出的元数据项（未落库）。
+
+    `char_start` / `char_end` 是**全文坐标系**下的捕获组区间，
+    供流水线构造 `owner_type='contract_metadata'` 的锚点，
+    以支持工作台"高亮标记提取的元数据字段"（PRD 2.4.3）。
+    区间来自正则捕获组本身，因此天然精确，无需再做文本匹配。
+    """
 
     meta_key: MetadataKey
     meta_value: str
@@ -77,6 +83,8 @@ class MetadataDraft:
     value_type: str
     confidence: float = 1.0
     need_review: bool = False
+    char_start: int | None = None
+    char_end: int | None = None
 
 
 @dataclass
@@ -171,9 +179,13 @@ def _classify(content: str, clause_no: str | None) -> ClauseType:
 
 #: 元数据提取模式：(键, 正则, 归一化函数)
 #: 只覆盖阶段一演示所需的关键字段，见 docs/data-model.md §3.5。
+#: ⚠️ 括号内的别名部分必须**排除换行**（`[^）)\n]`，不能用 `[^）)]`）：
+#: 否则「甲方：A\n乙方：B」会被跨行匹配——甲方行没有括号时，别名段
+#: 一路吃到下一行，取值落到乙方的值上。实测缺陷：甲乙方同名时
+#: 两个锚点重合（见 test_metadata_span_distinguishes_duplicate_values）。
 _METADATA_PATTERNS: tuple[tuple[MetadataKey, re.Pattern[str]], ...] = (
-    (MetadataKey.PARTY_A_NAME, re.compile(r"甲方[（(]?[^）)]*[）)]?\s*[:：]\s*([^\n，,。；;]{2,60})")),
-    (MetadataKey.PARTY_B_NAME, re.compile(r"乙方[（(]?[^）)]*[）)]?\s*[:：]\s*([^\n，,。；;]{2,60})")),
+    (MetadataKey.PARTY_A_NAME, re.compile(r"甲方[（(]?[^）)\n]*[）)]?\s*[:：]\s*([^\n，,。；;]{2,60})")),
+    (MetadataKey.PARTY_B_NAME, re.compile(r"乙方[（(]?[^）)\n]*[）)]?\s*[:：]\s*([^\n，,。；;]{2,60})")),
     (MetadataKey.CONTRACT_NO, re.compile(r"合同编号\s*[:：]\s*([A-Za-z0-9\-_/]{3,64})")),
     (MetadataKey.SIGN_DATE, re.compile(r"(?:签订|签署)日期\s*[:：]?\s*(\d{4}\s*[-年/]\s*\d{1,2}\s*[-月/]\s*\d{1,2}\s*日?)")),
     (MetadataKey.SIGN_PLACE, re.compile(r"(?:签订|签署)地点\s*[:：]\s*([^\n，,。；;]{2,60})")),
@@ -201,6 +213,24 @@ _CURRENCY_RE = re.compile(r"(人民币|美元|欧元|港币|日元|CNY|USD|EUR|H
 #: 履行期限
 _TERM_RE = re.compile(r"(?:履行|合同)期限\s*[:：]?\s*([^\n，,。；;]{2,60})")
 
+#: 生效条件。PRD 2.4.4 点名的核心元数据之一。
+#:
+#: 语义是"合同在什么条件下生效"，常见写法：
+#:   「本合同自双方签字盖章之日起生效。」
+#:   「本合同自双方签字并加盖公章后生效。」
+#:   「本合同经双方授权代表签署后生效。」
+#: 因此捕获的是"自/经 … 之日起/后"中间的条件描述。
+#:
+#: ⚠️ 用**非贪婪**且**不跨句**的区间：句号/换行即终止，
+#: 避免把后续条款正文一起吞进来（实测缺陷模式同 `_AMOUNT_RE`）。
+_EFFECTIVE_CONDITION_RE = re.compile(
+    r"(?:本合同|本协议|合同|协议)"
+    r"[^。\n]{0,8}?"
+    r"(?:自|经|于)"
+    r"([^。\n]{2,60}?)"
+    r"(?:之日)?(?:起|后)?生效"
+)
+
 
 def extract_metadata(doc: DocumentText) -> list[MetadataDraft]:
     """从全文提取元数据。
@@ -213,50 +243,68 @@ def extract_metadata(doc: DocumentText) -> list[MetadataDraft]:
     seen: set[str] = set()
 
     def add(key: MetadataKey, raw: str, value_type: str,
-            normalized: str | None = None) -> None:
+            normalized: str | None = None,
+            span: tuple[int, int] | None = None) -> None:
         if key.value in seen:
             return
         cleaned = raw.strip()
         if not cleaned:
             return
         seen.add(key.value)
+        # 区间要跟着 `strip()` 一起收窄，否则锚点会框住前后空白
+        char_start, char_end = span if span else (None, None)
+        if char_start is not None and char_end is not None:
+            lead = len(raw) - len(raw.lstrip())
+            char_start += lead
+            char_end = char_start + len(cleaned)
         out.append(MetadataDraft(
             meta_key=key,
             meta_value=cleaned[:1024],
             value_normalized=(normalized or cleaned)[:512],
             value_type=value_type,
+            char_start=char_start,
+            char_end=char_end,
         ))
 
+    # 各模式统一传捕获组区间（`m.span(1)`），供元数据锚点使用。
     for key, pat in _METADATA_PATTERNS:
         m = pat.search(text)
         if m:
             raw = m.group(1)
             if key == MetadataKey.SIGN_DATE:
-                add(key, raw, "date", _normalize_date(raw))
+                add(key, raw, "date", _normalize_date(raw), m.span(1))
             else:
-                add(key, raw, "string")
+                add(key, raw, "string", span=m.span(1))
 
     # 金额：单独处理，需要归一化为数字串
     m = _AMOUNT_RE.search(text)
     if m:
         amount = _normalize_amount(m.group(1))
         if amount is not None:
-            add(MetadataKey.AMOUNT, m.group(1), "decimal", str(amount))
+            add(MetadataKey.AMOUNT, m.group(1), "decimal", str(amount), m.span(1))
 
-    # 信用代码：取前两个分别作为甲乙方
-    codes = _CREDIT_CODE_RE.findall(text)
+    # 信用代码：取前两个分别作为甲乙方。
+    # 用 finditer 而非 findall —— 需要捕获组区间来锚定，findall 会丢位置。
+    codes = list(_CREDIT_CODE_RE.finditer(text))
     if codes:
-        add(MetadataKey.PARTY_A_CREDIT_CODE, codes[0], "string")
+        add(MetadataKey.PARTY_A_CREDIT_CODE, codes[0].group(1), "string",
+            span=codes[0].span(1))
         if len(codes) > 1:
-            add(MetadataKey.PARTY_B_CREDIT_CODE, codes[1], "string")
+            add(MetadataKey.PARTY_B_CREDIT_CODE, codes[1].group(1), "string",
+                span=codes[1].span(1))
 
     m = _CURRENCY_RE.search(text)
     if m:
-        add(MetadataKey.CURRENCY, m.group(1), "string", _normalize_currency(m.group(1)))
+        add(MetadataKey.CURRENCY, m.group(1), "string",
+            _normalize_currency(m.group(1)), m.span(1))
 
     m = _TERM_RE.search(text)
     if m:
-        add(MetadataKey.TERM, m.group(1), "string")
+        add(MetadataKey.TERM, m.group(1), "string", span=m.span(1))
+
+    m = _EFFECTIVE_CONDITION_RE.search(text)
+    if m:
+        add(MetadataKey.EFFECTIVE_CONDITION, m.group(1), "string", span=m.span(1))
 
     logger.info("元数据提取完成: %s 项", len(out))
     return out

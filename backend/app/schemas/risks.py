@@ -53,6 +53,9 @@ class RiskItemOut(BaseModel):
     unanchored: bool
     seq: int
     clause_id: int | None = None
+    #: 命中条款的原文。供前端"条款差异对比"（PRD 2.4.5）展示原文侧，
+    #: 避免前端再拉一次条款列表并按 id 反查。
+    clause_content: str | None = None
 
     anchors: list[AnchorOut] = Field(default_factory=list)
     evidences: list[EvidenceOut] = Field(default_factory=list)

@@ -30,6 +30,7 @@ import {
   getTaskProgress,
   listClauses,
   listEvents,
+  listMetadata,
   listRisks,
   originalUrl,
   retryTask,
@@ -85,6 +86,12 @@ export default function Workbench() {
   const clausesQ = useQuery({
     queryKey: ["clauses", contractId],
     queryFn: () => listClauses(contractId),
+    enabled: Number.isFinite(contractId),
+  });
+
+  const metadataQ = useQuery({
+    queryKey: ["metadata", contractId],
+    queryFn: () => listMetadata(contractId),
     enabled: Number.isFinite(contractId),
   });
 
@@ -240,6 +247,7 @@ export default function Workbench() {
           <PdfViewer
             contractId={contractId}
             risks={risks}
+            metadata={metadataQ.data}
             focusAnchor={focusAnchor}
             onPickRisk={pickFromPdf}
           />

@@ -58,6 +58,21 @@ export const CATEGORY_LABEL: Record<string, string> = {
   other: "其他",
 };
 
+/** 元数据键的中文标签（与后端 report_service._META_LABEL 保持一致）。 */
+export const METADATA_LABEL: Record<string, string> = {
+  contract_no: "合同编号",
+  party_a_name: "甲方",
+  party_b_name: "乙方",
+  party_a_credit_code: "甲方统一社会信用代码",
+  party_b_credit_code: "乙方统一社会信用代码",
+  amount: "合同金额",
+  currency: "币种",
+  term: "履约期限",
+  effective_condition: "生效条件",
+  sign_date: "签订日期",
+  sign_place: "签订地点",
+};
+
 /** 后端金额是 Decimal 序列化后的字符串，转成带千分位的展示。 */
 export function formatAmount(amount: string | null, currency: string | null): string {
   if (!amount) return "—";

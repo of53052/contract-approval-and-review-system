@@ -191,6 +191,17 @@
 | `sign_date` | 签订日期 | date | ❌ | — |
 | `sign_place` | 签订地点 | string | ❌ | — |
 
+> **提取状态**（批次 5）：上表 11 个键中，`party_a_name` / `party_b_name` /
+> `party_a_credit_code` / `party_b_credit_code` / `contract_no` / `amount` /
+> `currency` / `term` / `effective_condition` **已有提取实现**；
+> `sign_date` / `sign_place` 正则已就绪，但演示样本无对应文本，
+> 属"有实现、无样本覆盖"。
+>
+> **区间随提取一起产出**：每个 `MetadataDraft` 带全文 `char_start` / `char_end`，
+> 由 `pipeline._save_metadata` 写成 `owner_type='contract_metadata'` 的锚点，
+> 支撑 PRD 2.4.3 的"高亮标记提取的元数据字段"。区间取自**正则捕获组**，
+> 不是事后用取值反查原文——后者在同一取值出现多次时会锚到第一处。
+
 ---
 
 ## 4. 实体关系总览

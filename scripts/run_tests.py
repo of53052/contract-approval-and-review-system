@@ -385,13 +385,27 @@ def _purge_by_hash(db: Session, file_hash: str) -> None:
         return
     ids = list(rows)
 
-    # anchor 是多态关联（无数据库外键），先按 risk_item 反查再删
+    # anchor 是多态关联（无数据库外键），必须**按 owner_type 分别**反查再删。
+    #
+    # ⚠️ 不能只按 owner_id 过滤：risk_item 与 contract_metadata 的 id 各自
+    # 独立自增，两个 id 空间会重叠（都从 1 开始）。只按 id 删会误删另一类
+    # 锚点，同时留下真正的孤儿行，触发 check_consistency.py C1。
     risk_ids = list(db.execute(
         select(RiskItem.id).where(RiskItem.contract_id.in_(ids))
     ).scalars())
     if risk_ids:
-        db.execute(delete(Anchor).where(Anchor.owner_id.in_(risk_ids)))
+        db.execute(delete(Anchor).where(
+            Anchor.owner_type == "risk_item", Anchor.owner_id.in_(risk_ids)
+        ))
         db.execute(delete(RiskEvidence).where(RiskEvidence.risk_item_id.in_(risk_ids)))
+
+    meta_ids = list(db.execute(
+        select(ContractMetadata.id).where(ContractMetadata.contract_id.in_(ids))
+    ).scalars())
+    if meta_ids:
+        db.execute(delete(Anchor).where(
+            Anchor.owner_type == "contract_metadata", Anchor.owner_id.in_(meta_ids)
+        ))
 
     # 按 contract_id 关联的表，依赖顺序：叶子 → 根
     for model in (RiskItem, Annotation, Clause, ContractMetadata,
