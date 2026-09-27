@@ -39,6 +39,7 @@ import workerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { PDFDocumentProxy, PDFPageProxy } from "pdfjs-dist";
 import type { ContractMetadataItem, RiskItem } from "../types";
 import { anchorToPixelBox, textSpanBox } from "../lib/anchorCoords";
+import { scrollElementToCenter } from "../lib/scroll";
 import { METADATA_LABEL } from "../constants";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
@@ -81,8 +82,9 @@ interface Props {
   risks: RiskItem[];
   /** 元数据清单；只画有锚点的项（PRD 2.4.3「高亮标记提取的元数据字段」） */
   metadata?: ContractMetadataItem[];
-  /** 当前聚焦的锚点（来自右侧卡片点击） */
-  focusAnchor: { riskId: number; pageNo: number; bbox: number[] } | null;
+  /** 当前聚焦的锚点（来自右侧卡片点击）。`seq` 每次点击自增，
+   *  保证"重复点同一张卡片"也会重新触发滚动（否则对象不变、effect 不跑）。 */
+  focusAnchor: { riskId: number; pageNo: number; bbox: number[]; seq: number } | null;
   /** 正文 → 卡片：点中某风险的高亮 */
   onPickRisk: (riskId: number) => void;
 }
@@ -130,7 +132,6 @@ export default function PdfViewer({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   // 加载 PDF
   useEffect(() => {
@@ -178,15 +179,6 @@ export default function PdfViewer({
       task.destroy();
     };
   }, [contractId]);
-
-  // 聚焦锚点：跳页 + 滚动到可视区
-  useEffect(() => {
-    if (!focusAnchor) return;
-    const el = pageRefs.current.get(focusAnchor.pageNo);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  }, [focusAnchor]);
 
   // 有锚点的元数据项数量（用于头部图例）
   const metaCount = useMemo(
@@ -311,10 +303,7 @@ export default function PdfViewer({
                 metadata={metadata}
                 activeRiskId={focusAnchor?.riskId ?? null}
                 onPickRisk={onPickRisk}
-                registerRef={(el) => {
-                  if (el) pageRefs.current.set(pageNo, el);
-                  else pageRefs.current.delete(pageNo);
-                }}
+                focusAnchor={focusAnchor}
               />
             ))}
           </Flex>
@@ -334,7 +323,7 @@ function PdfPage({
   metadata,
   activeRiskId,
   onPickRisk,
-  registerRef,
+  focusAnchor,
 }: {
   pdf: PDFDocumentProxy;
   pageNo: number;
@@ -343,12 +332,16 @@ function PdfPage({
   metadata?: ContractMetadataItem[];
   activeRiskId: number | null;
   onPickRisk: (riskId: number) => void;
-  registerRef: (el: HTMLDivElement | null) => void;
+  focusAnchor: { riskId: number; pageNo: number; bbox: number[]; seq: number } | null;
 }) {
   const [page, setPage] = useState<PDFPageProxy | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
+  /** 本页高亮框 DOM，key 为 `${riskId}:${index}`；用于滚动居中。 */
+  const boxRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  /** 上一次见到的 focusAnchor.seq，避免 scale 变化时重复滚动。 */
+  const prevSeqRef = useRef<number | null>(null);
 
   // 加载页面
   useEffect(() => {
@@ -497,16 +490,34 @@ function PdfPage({
     [boxes, onPickRisk],
   );
 
+  // 聚焦锚点：把命中本页的高亮框滚到容器垂直居中。
+  //
+  // ⚠️ 必须放在 PdfPage 内而不是父组件：高亮框要等 `page` 加载完、
+  // `boxes` 算出来才存在，父组件此刻拿不到它的 DOM，只能退而滚整页。
+  //
+  // 触发条件是"seq 出现新值"，不是"boxes 变了"：scale 变化会让 boxes
+  // 重算并重跑本 effect，但用户的手动缩放不该把视图拽回锚点。
+  // 用"比较上一次的 seq"而非"是否处理过某个值"——本组件会随页码
+  // 增删重挂载，后者会把历史 seq 误判成一次新定位。
+  useEffect(() => {
+    const seqChanged = prevSeqRef.current !== focusAnchor?.seq;
+    prevSeqRef.current = focusAnchor?.seq ?? null;
+    if (!seqChanged || !focusAnchor || focusAnchor.pageNo !== pageNo) return;
+    const idx = boxes.findIndex((b) => b.riskId === focusAnchor.riskId);
+    if (idx < 0) return;
+    const el = boxRefs.current.get(`${focusAnchor.riskId}:${idx}`);
+    if (!el) return;
+    scrollElementToCenter(el);
+  }, [focusAnchor, pageNo, boxes]);
+
   return (
     <div
-      ref={registerRef}
       style={{
         position: "relative",
         width: size.width || undefined,
         height: size.height || undefined,
         background: "#fff",
         boxShadow: "0 1px 4px rgba(0,0,0,0.15)",
-        scrollMarginTop: 12,
       }}
     >
       <canvas ref={canvasRef} style={{ display: "block" }} />
@@ -536,6 +547,11 @@ function PdfPage({
       {boxes.map((b, i) => (
         <div
           key={`${b.riskId}-${i}`}
+          ref={(el) => {
+            const k = `${b.riskId}:${i}`;
+            if (el) boxRefs.current.set(k, el);
+            else boxRefs.current.delete(k);
+          }}
           className={`pdf-highlight level-${b.level}${
             b.riskId === activeRiskId ? " active" : ""
           }`}

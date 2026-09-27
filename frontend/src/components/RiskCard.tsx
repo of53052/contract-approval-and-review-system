@@ -25,11 +25,15 @@ import { apiError } from "../api/client";
 import type { RiskItem } from "../types";
 import { CATEGORY_LABEL, RISK_META } from "../constants";
 import { diffChars } from "../lib/textDiff";
+import { scrollElementToCenter } from "../lib/scroll";
 
 interface Props {
   risk: RiskItem;
   active: boolean;
   flash: boolean;
+  /** 居中序号：来自工作台，仅在"从正文跳转过来"时自增。
+   *  值变化即"发生了一次正文→卡片定位"，用于重复定位同一张卡片。 */
+  centerSeq: number;
   onLocate: (risk: RiskItem) => void;
 }
 
@@ -68,21 +72,34 @@ const MERGED_BY_LABEL: Record<RiskItem["merged_by"], string> = {
   both: "规则 + AI 双确认",
 };
 
-export default function RiskCard({ risk, active, flash, onLocate }: Props) {
+export default function RiskCard({ risk, active, flash, centerSeq, onLocate }: Props) {
   const qc = useQueryClient();
   const { message } = AntApp.useApp();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(risk.suggestion_edited ?? risk.suggestion ?? "");
   const ref = useRef<HTMLDivElement>(null);
+  /** 上一次见到的 centerSeq。用于区分"正文跳转过来"与"右栏自己点击"——
+   *  后者只翻转 active、centerSeq 不变，不应让右栏跟着滚动。 */
+  const prevSeqRef = useRef(centerSeq);
 
   useEffect(() => {
     if (!editing) setDraft(risk.suggestion_edited ?? risk.suggestion ?? "");
   }, [risk.suggestion, risk.suggestion_edited, editing]);
 
-  // 被正文反向定位时滚进可视区
+  // 被正文反向定位时滚到可视区**垂直居中**。
+  //
+  // 触发条件必须严格是"`centerSeq` 出现了新值且本卡是当前定位目标"，
+  // 而不是"active 变了"：
+  // - 点右栏卡片（卡片→正文）时 active 会翻转但 centerSeq 不变，
+  //   若按 active 触发，右栏会在光标下自己滚动，体验很差；
+  // - 连续点同一处高亮时 active 不变，只按 active 又会"点了没反应"。
+  // 用 ref 存上一次的序号做比较（而非"是否处理过某个值"）——
+  // 后者对"本次才挂载、但序号已是历史值"的卡片会误判为首次定位。
   useEffect(() => {
-    if (active) ref.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [active]);
+    const seqChanged = prevSeqRef.current !== centerSeq;
+    prevSeqRef.current = centerSeq;
+    if (seqChanged && active && ref.current) scrollElementToCenter(ref.current);
+  }, [active, centerSeq]);
 
   const saveMut = useMutation({
     mutationFn: (body: { suggestion_edited?: string | null; adopted?: boolean | null }) =>

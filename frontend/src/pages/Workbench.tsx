@@ -57,6 +57,13 @@ export default function Workbench() {
 
   const [activeRiskId, setActiveRiskId] = useState<number | null>(null);
   const [flashRiskId, setFlashRiskId] = useState<number | null>(null);
+  /** 定位序号：**点哪一侧，就只让另一侧重新居中**，因此分两个计数器。
+   *  仅靠 activeRiskId 无法触发重复定位——点同一张卡片时 state 不变，
+   *  下游 effect 不会重跑，用户会以为"点了没反应"。
+   *  `pdfSeq`：右栏卡片 → 正文（驱动 PdfViewer 居中）；
+   *  `cardSeq`：正文高亮 → 右栏卡片（驱动 RiskCard 居中）。 */
+  const [pdfSeq, setPdfSeq] = useState(0);
+  const [cardSeq, setCardSeq] = useState(0);
   const [levelFilter, setLevelFilter] = useState<string>("all");
 
   const contractQ = useQuery({
@@ -123,16 +130,18 @@ export default function Workbench() {
     [risks, levelFilter],
   );
 
-  /** 右侧卡片 → 正文 */
+  /** 右侧卡片 → 正文（只驱动正文居中，不动右栏） */
   const locateFromCard = (risk: RiskItem) => {
     setActiveRiskId(risk.id);
+    setPdfSeq((s) => s + 1);
     // 无锚点的风险项只高亮卡片，不跳正文
   };
 
-  /** 正文 → 右侧卡片 */
+  /** 正文 → 右侧卡片（只驱动右栏居中，不动正文） */
   const pickFromPdf = (riskId: number) => {
     setActiveRiskId(riskId);
     setFlashRiskId(riskId);
+    setCardSeq((s) => s + 1);
     window.setTimeout(() => setFlashRiskId(null), 1200);
   };
 
@@ -146,8 +155,9 @@ export default function Workbench() {
       riskId: risk.id,
       pageNo: a.page_no,
       bbox: [a.bbox_x0, a.bbox_y0, a.bbox_x1, a.bbox_y1],
+      seq: pdfSeq,
     };
-  }, [activeRiskId, risks]);
+  }, [activeRiskId, risks, pdfSeq]);
 
   if (contractQ.isLoading) {
     return (
@@ -345,6 +355,7 @@ export default function Workbench() {
                   risk={r}
                   active={r.id === activeRiskId}
                   flash={r.id === flashRiskId}
+                  centerSeq={cardSeq}
                   onLocate={locateFromCard}
                 />
               ))}
