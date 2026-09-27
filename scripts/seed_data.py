@@ -62,6 +62,13 @@ TEMPLATES: list[dict] = [
 # ==================== 规则（对应架构文档 §8.5 阈值表）====================
 # 字段：code / name / category / risk_level / rule_type / config /
 #       result_template / suggestion_template / conditions
+#
+# ⚠️ **按业务类型分组**（批次 9 修正）：原先所有规则都挂在"采购合同"模板下，
+# 其余三个模板是空壳。那时只有采购合同是真实输入，问题不显；一旦有销售/劳动合同，
+# "挂错模板"就变成两类实际故障：
+#   ① 销售/劳动合同加载不到任何规则 → 确定性规则引擎 0 命中，只剩 LLM；
+#   ② 采购规则（要求"标的物""付款条款内必须提验收"）与劳动场景完全不搭。
+# 每类合同只挂它真正适用的规则，模板树的数字才有意义。
 
 def _c(field: str, operator: RuleOperator, value: str | None,
        value_type: ValueType = ValueType.STRING) -> dict:
@@ -69,8 +76,9 @@ def _c(field: str, operator: RuleOperator, value: str | None,
     return {"field": field, "operator": operator, "value": value, "value_type": value_type}
 
 
-RULES: list[dict] = [
-    # ---------- 高风险 ----------
+# ---------- 采购合同（我方为采购方）----------
+_PURCHASE_RULES: list[dict] = [
+    # ---- 高风险 ----
     {
         "code": "LIABILITY_UNCAPPED",
         "name": "违约责任无上限",
@@ -84,15 +92,27 @@ RULES: list[dict] = [
         "conditions": [_c("clause.content", RuleOperator.CONTAINS, "无上限")],
     },
     {
-        "code": "LIABILITY_UNEQUAL",
+        "code": "LIABILITY_ASYMMETRY",
         "name": "违约责任不对等",
         "category": RiskCategory.LIABILITY,
         "risk_level": RiskLevel.HIGH,
         "rule_type": RuleType.THRESHOLD,
-        "config": {"threshold": 0.20, "metric": "penalty_ratio", "direction": "gt"},
-        "result_template": "违约金比例超过 {threshold} 上限，责任分配可能不对等。",
-        "suggestion_template": "建议将违约金比例调整为合同总金额的 20% 以内，并双向对等约定。",
-        "conditions": [_c("metadata.amount", RuleOperator.EXISTS, None)],
+        # PRD 2.4.9 场景二要求识别"客户方万分之一滞纳金、我方无上限赔偿"这类
+        # 责任严重不对等的条款。它不是"某个比例超限"，而是**两种表述并存**，
+        # 因此用 liability_asymmetry（详见 rule_engine._check_liability_asymmetry）。
+        # ⚠️ 原先这个位置是一条 penalty_ratio > 0.2 的规则，与中风险的
+        # PENALTY_OVER_LIMIT 配置完全相同——同一事实必报两条（一条 high 一条
+        # medium），既重复又掩盖了"不对等"这个真正要判的语义。
+        "config": {
+            "metric": "liability_asymmetry",
+            "severe_keywords": ["全部损失", "一切损失", "无上限", "不设上限", "不受限制"],
+            "mild_keywords": ["万分之一", "万分之五", "累计不超过", "不超过应付未付金额"],
+            "mild_ratio_max": 0.05,
+        },
+        "result_template": "双方违约责任明显不对等：一方承担无上限赔偿责任，另一方仅承担极小比例责任。",
+        "suggestion_template": "建议对等约定：双方均按合同总金额的同一比例承担违约责任，"
+                               "并均设置不超过合同总金额的赔偿上限。",
+        "conditions": [],
     },
     {
         "code": "JURISDICTION_INVALID",
@@ -104,6 +124,7 @@ RULES: list[dict] = [
                                  "供应商所在地法院", "乙方所在地法院"]},
         "result_template": "争议管辖地约定不利于我方，可能显著提高维权成本。",
         "suggestion_template": "建议改为由我方所在地有管辖权的人民法院管辖。",
+        # BLACKLIST 会读 conditions 里的 regex（见 rule_engine._apply_blacklist）
         "conditions": [_c("clause.content", RuleOperator.REGEX,
                           "境外仲裁|香港仲裁|新加坡仲裁|对方所在地法院|供应商所在地法院|乙方所在地法院")],
     },
@@ -119,14 +140,19 @@ RULES: list[dict] = [
         "config": {
             "within_clause_type": ClauseType.PAYMENT.value,
             "required_pattern": "验收",
+            # 锚点定位提示（批次 9）：本条风险说的是**付款条款**有问题，
+            # 但样本里「合同金额」与「付款方式」同属 payment 类型，
+            # 不指定就会锚到前者。引擎优先在"缺该模式的那类条款"里挑
+            # 含这些词的条目（见 rule_engine._guess_anchor_clause）。
+            # 锚错不仅高亮指向错误段落，还会让它与 LLM 的同类结论
+            # （引文落在付款条款）无法合并，同一事实出现两张卡片。
+            "anchor_keywords": ["付款", "支付"],
         },
         "result_template": "付款条款未以验收为前置条件，存在先付款后验收风险。",
         "suggestion_template": "建议约定：甲方验收合格并出具验收单后，方支付相应款项。",
         # ⚠️ 这里**故意不写 conditions**：规则引擎从不读 `clause.payment.content`
-        # 这类字段（`clause.` 后面只能是 content / clause_type / clause_no / title），
-        # 写了也是死配置——引擎静默忽略，看起来配了实则毫无作用。
-        # "付款条款内必须提到验收"的语义由 config.within_clause_type +
-        # config.required_pattern 表达（见 rule_engine._apply_presence）。
+        # 这类字段（`clause.` 后面只能是 content / clause_type / clause_no / title）。
+        # "付款条款内必须提到验收"由 config.within_clause_type + required_pattern 表达。
         "conditions": [],
     },
     {
@@ -144,8 +170,9 @@ RULES: list[dict] = [
         ], "match_all": False},
         "result_template": "知识产权归属约定不利于我方，可能丧失核心成果所有权。",
         "suggestion_template": "建议约定：本项目产生的知识产权归我方所有，对方仅享有使用权。",
-        "conditions": [_c("clause.content", RuleOperator.REGEX,
-                          "知识产权归(对方|甲方|乙方|供应商)所有|所有权归(供应商|乙方)")],
+        # KEYWORD 只读 contains 条件，正则不会被读取（原先挂在这里的正则条件
+        # 因此是死配置），同义写法统一由 config.keywords 覆盖。
+        "conditions": [],
     },
     {
         "code": "SUBJECT_MISSING",
@@ -172,7 +199,7 @@ RULES: list[dict] = [
         "suggestion_template": "建议要求对方提供资质证明，或提供履约担保后再签约。",
         "conditions": [_c("metadata.party_b_name", RuleOperator.EXISTS, None)],
     },
-    # ---------- 中风险 ----------
+    # ---- 中风险 ----
     {
         "code": "PENALTY_OVER_LIMIT",
         "name": "违约金比例超限",
@@ -180,7 +207,7 @@ RULES: list[dict] = [
         "risk_level": RiskLevel.MEDIUM,
         "rule_type": RuleType.THRESHOLD,
         "config": {"threshold": 0.20, "metric": "penalty_ratio", "direction": "gt"},
-        "result_template": "违约金比例 {value} 超过 {threshold} 的参考上限。",
+        "result_template": "违约金比例超过 {threshold} 的参考上限。",
         "suggestion_template": "建议将违约金比例下调至合同总金额的 20% 以内。",
         "conditions": [_c("metadata.amount", RuleOperator.EXISTS, None)],
     },
@@ -193,7 +220,10 @@ RULES: list[dict] = [
         "config": {"required_pattern": "保密期限"},
         "result_template": "保密条款未明确期限，义务边界不清晰。",
         "suggestion_template": "建议约定：保密义务自签署之日起持续 {n} 年。",
-        "conditions": [_c("clause.content", RuleOperator.NOT_CONTAINS, "保密期限")],
+        # 原先挂着 `clause.content not_contains 保密期限`。引擎在任何类型下都不读
+        # not_contains（presence 只读 not_exists），是死配置；语义已由
+        # config.required_pattern 完整表达（批次 9 由写入校验统一挡掉）。
+        "conditions": [],
     },
     {
         "code": "FORCE_MAJEURE_NO_NOTICE",
@@ -204,7 +234,7 @@ RULES: list[dict] = [
         "config": {"required_pattern": "日内通知"},
         "result_template": "不可抗力条款未约定通知时效，事后举证易生争议。",
         "suggestion_template": "建议约定：受影响方应在不可抗力发生后 15 日内书面通知对方。",
-        "conditions": [_c("clause.content", RuleOperator.NOT_CONTAINS, "日内通知")],
+        "conditions": [],  # 同 CONFIDENTIALITY_NO_TERM，原 not_contains 条件不生效
     },
     {
         "code": "AMOUNT_MISSING",
@@ -229,6 +259,227 @@ RULES: list[dict] = [
         "conditions": [_c("metadata.currency", RuleOperator.EXISTS, None)],
     },
 ]
+
+
+# ---------- 销售合同（我方为供方）----------
+# 与采购的差别在**立场**：我方交付、对方付款。因此"付款前置验收"这类
+# 采购专属要求不适用（我们不能用拒付来制衡客户），而"责任不对等"是
+# PRD 2.4.9 场景二点名的核心风险。
+_SALES_RULES: list[dict] = [
+    {
+        "code": "LIABILITY_ASYMMETRY",
+        "name": "违约责任不对等",
+        "category": RiskCategory.LIABILITY,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.THRESHOLD,
+        "config": {
+            "metric": "liability_asymmetry",
+            "severe_keywords": ["全部损失", "一切损失", "无上限", "不设上限", "不受限制"],
+            "mild_keywords": ["万分之一", "万分之五", "累计不超过", "不超过应付未付金额"],
+            "mild_ratio_max": 0.05,
+        },
+        "result_template": "双方违约责任明显不对等：我方承担无上限赔偿责任，"
+                           "而对方仅承担极小比例责任。",
+        "suggestion_template": "建议对等约定：双方均按合同总金额的同一比例承担违约责任，"
+                               "并均设置不超过合同总金额的赔偿上限。",
+        "conditions": [],
+    },
+    {
+        "code": "LIABILITY_UNCAPPED",
+        "name": "违约责任无上限",
+        "category": RiskCategory.LIABILITY,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.KEYWORD,
+        "config": {"keywords": ["无上限", "不设上限", "不受限制", "全部损失", "一切损失"],
+                   "match_all": False},
+        "result_template": "违约责任未设赔偿上限，我方责任敞口不可预估。",
+        "suggestion_template": "建议增加责任上限条款：任一方承担的赔偿责任总额不超过合同总金额。",
+        "conditions": [],
+    },
+    {
+        "code": "JURISDICTION_INVALID",
+        "name": "管辖地约定违规",
+        "category": RiskCategory.JURISDICTION,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.BLACKLIST,
+        "config": {"blacklist": ["境外仲裁", "香港仲裁", "新加坡仲裁", "对方所在地法院",
+                                 "客户所在地法院", "乙方所在地法院"]},
+        "result_template": "争议管辖地约定不利于我方，可能显著提高维权成本。",
+        "suggestion_template": "建议改为由我方所在地有管辖权的人民法院管辖。",
+        "conditions": [],
+    },
+    {
+        "code": "SUBJECT_MISSING",
+        "name": "主体信息缺失",
+        "category": RiskCategory.SUBJECT_QUALIFICATION,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.PRESENCE,
+        "config": {"required_keys": ["party_a_name", "party_b_name"]},
+        "result_template": "合同主体信息不完整，无法核实对方资质。",
+        "suggestion_template": "建议补全双方全称与统一社会信用代码。",
+        "conditions": [],
+    },
+    {
+        "code": "SUBJECT_ABNORMAL",
+        "name": "主体列入经营异常",
+        "category": RiskCategory.SUBJECT_QUALIFICATION,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.BLACKLIST,
+        "config": {"source": "subject_blacklist", "match_field": "subject_name"},
+        "result_template": "相对方主体被列入经营异常名录，履约能力存疑。",
+        "suggestion_template": "建议要求对方提供资质证明，或提供履约担保后再签约。",
+        "conditions": [],
+    },
+    {
+        "code": "PENALTY_OVER_LIMIT",
+        "name": "违约金比例超限",
+        "category": RiskCategory.LIABILITY,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.THRESHOLD,
+        "config": {"threshold": 0.20, "metric": "penalty_ratio", "direction": "gt"},
+        "result_template": "违约金比例超过 {threshold} 的参考上限。",
+        "suggestion_template": "建议将违约金比例下调至合同总金额的 20% 以内。",
+        "conditions": [],
+    },
+    {
+        "code": "CONFIDENTIALITY_NO_TERM",
+        "name": "保密义务无期限",
+        "category": RiskCategory.CONFIDENTIALITY,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        "config": {"required_pattern": "保密期限"},
+        "result_template": "保密条款未明确期限，义务边界不清晰。",
+        "suggestion_template": "建议约定：保密义务自签署之日起持续 {n} 年。",
+        "conditions": [],
+    },
+    {
+        "code": "FORCE_MAJEURE_NO_NOTICE",
+        "name": "不可抗力无通知时效",
+        "category": RiskCategory.FORCE_MAJEURE,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        "config": {"required_pattern": "日内通知"},
+        "result_template": "不可抗力条款未约定通知时效，事后举证易生争议。",
+        "suggestion_template": "建议约定：受影响方应在不可抗力发生后 15 日内书面通知对方。",
+        "conditions": [],
+    },
+]
+
+
+# ---------- 劳动合同（用人单位视角）----------
+# ⚠️ 注意：劳动合同**没有"合同金额/币种"**，因此不挂 AMOUNT_MISSING /
+# CURRENCY_MISSING；`global_checker` 也已按业务类型跳过这两项，否则每份
+# 劳动合同都会稳定报一条假风险。
+_LABOR_RULES: list[dict] = [
+    {
+        "code": "PROBATION_PAY_LOW",
+        "name": "试用期工资低于法定下限",
+        "category": RiskCategory.AMOUNT_PAYMENT,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.THRESHOLD,
+        # 《劳动合同法》第二十条：试用期工资不得低于本单位相同岗位最低档工资
+        # 或者劳动合同约定工资的 80%。
+        "config": {"metric": "probation_pay_ratio", "threshold": 80, "direction": "lt"},
+        "result_template": "试用期工资低于劳动合同约定工资的 80%，违反《劳动合同法》第二十条。",
+        "suggestion_template": "建议将试用期工资调整为不低于劳动合同约定工资的 80%，"
+                               "且不低于本单位相同岗位最低档工资。",
+        "conditions": [],
+    },
+    {
+        "code": "SOCIAL_INSURANCE_WAIVED",
+        "name": "约定放弃缴纳社会保险",
+        "category": RiskCategory.SUBJECT_QUALIFICATION,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.KEYWORD,
+        # 社保是法定强制义务，任何"自愿放弃"的约定均无效，且用人单位
+        # 仍需承担补缴与工伤赔付责任。
+        "config": {"keywords": ["自愿放弃", "放弃缴纳社会保险", "不缴纳社会保险",
+                                "社保补贴", "放弃社保"], "match_all": False},
+        "result_template": "约定劳动者放弃社会保险属无效条款，用人单位仍须承担补缴与工伤赔偿责任。",
+        "suggestion_template": "建议删除该约定，依法为劳动者办理社会保险登记并足额缴纳。",
+        "conditions": [],
+    },
+    {
+        "code": "WORKER_LIQUIDATED_DAMAGES",
+        "name": "对劳动者约定违约金",
+        "category": RiskCategory.LIABILITY,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.KEYWORD,
+        # 《劳动合同法》第二十五条：除服务期与竞业限制两种情形外，
+        # 用人单位不得与劳动者约定由劳动者承担违约金。
+        "config": {"keywords": ["提前离职的，应向甲方支付违约金",
+                                "应向甲方支付违约金", "支付违约金人民币"],
+                   "match_all": False},
+        "result_template": "除服务期、竞业限制外约定劳动者承担违约金，违反《劳动合同法》第二十五条。",
+        "suggestion_template": "建议删除对劳动者的一般性违约金约定；"
+                               "如确需约束，应改为合法的服务期约定并支付相应培训费用对价。",
+        "conditions": [],
+    },
+    {
+        "code": "OVERTIME_WAIVED",
+        "name": "约定不支付加班费",
+        "category": RiskCategory.AMOUNT_PAYMENT,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.KEYWORD,
+        "config": {"keywords": ["不另行支付加班费", "不支付加班费", "每周工作六天",
+                                "加班费已包含在工资内"], "match_all": False},
+        "result_template": "约定不支付加班费违反《劳动法》第四十四条，且超时工作本身即属违法。",
+        "suggestion_template": "建议按法定标准支付加班费，并将工作时间调整为每周不超过 40 小时。",
+        "conditions": [],
+    },
+    {
+        "code": "NON_COMPETE_NO_COMPENSATION",
+        "name": "竞业限制未约定补偿",
+        "category": RiskCategory.CONFIDENTIALITY,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        # 《劳动合同法》第二十三条：约定竞业限制的，应在解除或终止后
+        # 按月给予经济补偿；未约定补偿的，劳动者可主张按法定标准补足。
+        "config": {"within_clause_type": ClauseType.CONFIDENTIALITY.value,
+                   "required_pattern": "补偿"},
+        "result_template": "约定竞业限制但未约定经济补偿，该条款对劳动者的约束力存在争议。",
+        "suggestion_template": "建议约定：竞业限制期内按月支付不低于离职前十二个月"
+                               "平均工资 30% 的经济补偿。",
+        "conditions": [],
+    },
+    {
+        "code": "CONFIDENTIALITY_NO_TERM",
+        "name": "保密义务无期限",
+        "category": RiskCategory.CONFIDENTIALITY,
+        "risk_level": RiskLevel.MEDIUM,
+        "rule_type": RuleType.PRESENCE,
+        "config": {"required_pattern": "保密期限"},
+        "result_template": "保密条款未明确期限，义务边界不清晰。",
+        "suggestion_template": "建议约定：保密义务自签署之日起持续 {n} 年。",
+        "conditions": [],
+    },
+    {
+        "code": "SUBJECT_MISSING",
+        "name": "主体信息缺失",
+        "category": RiskCategory.SUBJECT_QUALIFICATION,
+        "risk_level": RiskLevel.HIGH,
+        "rule_type": RuleType.PRESENCE,
+        "config": {"required_keys": ["party_a_name", "party_b_name"]},
+        "result_template": "合同主体信息不完整，无法核实对方资质。",
+        "suggestion_template": "建议补全双方全称与统一社会信用代码。",
+        "conditions": [],
+    },
+]
+
+
+#: 业务类型 → 该类型下启用的规则。
+#: 新增合同类型时**只在这里加一组**，不要在别处复挂其他类型的规则。
+RULES_BY_TYPE: dict[str, list[dict]] = {
+    BusinessType.PURCHASE: _PURCHASE_RULES,
+    BusinessType.SALES: _SALES_RULES,
+    BusinessType.LABOR: _LABOR_RULES,
+    # 服务合同暂无独立规则集：它的风险面与销售/采购高度重叠，
+    # 在没有真实示例合同时凭空造规则只会产生无法验证的配置。
+    BusinessType.SERVICE: [],
+}
+
+#: 全部规则的扁平视图（供 dry-run 统计与测试遍历）。
+RULES: list[dict] = [r for rs in RULES_BY_TYPE.values() for r in rs]
 
 
 # ==================== 标准示范条款 ====================
@@ -353,36 +604,54 @@ def seed_templates(db: Session) -> dict[str, RuleTemplate]:
 
 
 def seed_rules(db: Session, templates: dict[str, RuleTemplate]) -> int:
-    """写入规则与条件。
+    """按业务类型写入规则与条件（`RULES_BY_TYPE`）。
 
-    阶段一：全部规则挂到"采购合同"模板下（其余模板留空，待阶段二补全）。
     规则按 `(template_id, code)` 唯一，重复执行走更新分支。
+
+    ⚠️ **改挂模板时必须清理旧挂载点**：批次 9 之前所有规则都挂在采购模板下，
+    本函数改为按类型挂载后，采购模板里那些"其实属于销售/劳动"的同名规则
+    必须删掉——`(template_id, code)` 唯一索引会让它们作为**孤儿规则**留在
+    采购模板里继续生效（如劳动合同的"试用期工资低于法定下限"跑到采购合同上）。
     """
-    purchase = templates[BusinessType.PURCHASE]
     count = 0
-    for seq, item in enumerate(RULES):
-        conditions = item["conditions"]
-        payload = {k: v for k, v in item.items() if k != "conditions"}
+    for bt in (BusinessType.PURCHASE, BusinessType.SALES,
+               BusinessType.SERVICE, BusinessType.LABOR):
+        tpl = templates[bt]
+        rules = RULES_BY_TYPE.get(bt, [])
+        keep_codes = {item["code"] for item in rules}
 
-        rule = db.execute(
-            select(Rule).where(Rule.template_id == purchase.id, Rule.code == item["code"])
-        ).scalar_one_or_none()
-        if rule is None:
-            rule = Rule(template_id=purchase.id, seq=seq, **payload)
-            db.add(rule)
-            db.flush()
-        else:
-            for k, v in payload.items():
-                setattr(rule, k, v)
-            rule.seq = seq
-            # 条件整体重建，避免残留已删除的条件
-            for old in list(rule.conditions):
-                db.delete(old)
-            db.flush()
+        # 1) 清掉本模板下已不在定义里的规则（改挂/删除的残留）
+        for stale in list(db.execute(
+            select(Rule).where(Rule.template_id == tpl.id)
+        ).scalars()):
+            if stale.code not in keep_codes:
+                db.delete(stale)
+        db.flush()
 
-        for cseq, cond in enumerate(conditions):
-            db.add(RuleCondition(rule_id=rule.id, seq=cseq, **cond))
-        count += 1
+        # 2) upsert 本类型的规则
+        for seq, item in enumerate(rules):
+            conditions = item["conditions"]
+            payload = {k: v for k, v in item.items() if k != "conditions"}
+
+            rule = db.execute(
+                select(Rule).where(Rule.template_id == tpl.id, Rule.code == item["code"])
+            ).scalar_one_or_none()
+            if rule is None:
+                rule = Rule(template_id=tpl.id, seq=seq, **payload)
+                db.add(rule)
+                db.flush()
+            else:
+                for k, v in payload.items():
+                    setattr(rule, k, v)
+                rule.seq = seq
+                # 条件整体重建，避免残留已删除的条件
+                for old in list(rule.conditions):
+                    db.delete(old)
+                db.flush()
+
+            for cseq, cond in enumerate(conditions):
+                db.add(RuleCondition(rule_id=rule.id, seq=cseq, **cond))
+            count += 1
     return count
 
 

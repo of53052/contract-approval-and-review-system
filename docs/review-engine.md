@@ -19,15 +19,16 @@ backend/app/services/
 │   └── dispatcher.py        格式判定 + 路径分派，唯一入口 parse_document()
 ├── review/                  审查层：段落树 → 风险清单
 │   ├── clause_splitter.py   条款切分 + 元数据提取
-│   ├── rule_engine.py       确定性规则（5 种类型）
+│   ├── rule_engine.py       确定性规则（5 种类型 + 4 种 metric）
+│   ├── rule_config.py       规则写入校验（拒"配了等于没配"的条件）
 │   ├── llm_reviewer.py      分批送审 + 字段级容错
 │   ├── merger.py            取高不取低 + 双来源留痕
-│   └── global_checker.py    必备条款全局校验 + 防幻觉闸门
+│   └── global_checker.py    必备条款全局校验（元数据要求**按业务类型区分**）
 └── llm/                     LLM 接入层
     ├── base.py              LLMProvider Protocol / ChatMessage / ChatResult
     ├── json_utils.py        JSON 四策略提取
     ├── openai_compat.py     真实端点（任意 OpenAI 兼容 base_url）
-    ├── mock_provider.py     7 组预置 fixture，无 Key 时兜底
+    ├── mock_provider.py     7 组预置 fixture（命中多组时**全部合并**并按 title 去重）
     └── __init__.py          get_provider() 工厂
 
 backend/app/workers/
@@ -44,7 +45,7 @@ backend/app/workers/
 ```powershell
 $py = "backend\.venv\Scripts\python.exe"
 
-# 单元 + 集成测试（含 WPS COM 端到端，34 项）
+# 单元 + 集成测试（含 WPS COM 端到端，116 项 + 1 skip）
 & $py -m pytest backend\tests -q
 
 # 只跑审查引擎
@@ -112,7 +113,41 @@ pending
 >
 > ⚠️ **扫描件没有 PDF.js 文本层**：工作台正文里点文字反向定位风险卡片的能力对扫描件不可用（文本层为空）；风险卡片 → 正文的正向高亮跳转不受影响。
 
-### 4.2 锚点：四级降级（`anchor_builder.locate`）
+### 4.2 规则引擎：5 种规则类型 × 4 种 metric（`rule_engine.py`）
+
+| 规则类型 | 判据 | 条件运算符（真正被读取的） |
+|---|---|---|
+| `keyword` | `config.keywords`（+ `match_all`） | `contains` |
+| `regex` | `config.pattern` | `regex` |
+| `blacklist` | `config.blacklist` 条目 | `contains` / `regex` |
+| `presence` | `config.required_pattern`，或 `within_clause_type` 内必须有该模式 | `not_exists`（`exists` 作为前置守卫亦接受） |
+| `threshold` | 按 `metric` 分派，见下表 | 无（`exists` 前置守卫接受） |
+
+**`threshold` 的四种 metric**（批次 9 起）：
+
+| metric | 语义 | 需要 threshold | 关键实现 |
+|---|---|---|---|
+| `penalty_ratio` | 扫描**任意条款**第一个百分比，与上限比较 | ✅ | `_check_penalty_ratio` |
+| `amount` | `metadata.amount` 与阈值比较 | ✅ | `_check_amount` |
+| `probation_pay_ratio` | **只在含「试用期」的条款**里取百分比（《劳动合同法》第二十条 80% 下限） | ✅ | `_check_probation_pay` |
+| `liability_asymmetry` | 全文**并存**重责表述（全部损失/无上限）与轻责表述（万分之一/累计不超过/比例 ≤ `mild_ratio_max`） | ❌ | `_check_liability_asymmetry` |
+
+> **为什么 `probation_pay_ratio` 不复用 `penalty_ratio`**：后者扫任意条款，
+> 在劳动合同里会抓到绩效比例、公积金比例这类无关数字。
+>
+> **为什么 `liability_asymmetry` 不需要 threshold**：它判的不是"某个值超限"，
+> 而是"两种表述并存"。`_apply_threshold` 在取阈值**之前**分派它，
+> 否则会被 threshold 校验拦掉。
+>
+> ⚠️ **不对等判定是有意的关键词并存启发式**，不做当事人方向理解。取舍与局限见
+> `architecture.md` §18.2.5 与 R16。
+
+**"配了等于没配"的防线**（`rule_config.py`，批次 9 收紧）：
+写入时按规则类型校验条件运算符是否真被引擎读取——不在 `_READ_CONDITION_OPS`
+且不属于 `_UNIVERSAL_CONDITION_OPS` 的一律 400。目的是让"规则已启用却从不命中"
+在保存时暴露，而不是等审查漏报后才被发现。
+
+### 4.3 锚点：四级降级（`anchor_builder.locate`）
 
 | 顺序 | 方法 | 触发条件 | 产出 level |
 |---|---|---|---|
@@ -125,7 +160,7 @@ pending
 
 **全部失败** → `level=none`，上层把 `risk_item.unanchored` 置 1，**不写 anchor 行、不伪造位置**。
 
-### 4.3 合并：取高不取低
+### 4.4 合并：取高不取低
 
 配对判据（`Merger._find_partner`，按优先级）：
 1. 同一 `clause_index`
@@ -134,7 +169,7 @@ pending
 
 配对成功 → `merged_by=both`，等级取两者较高，两条依据都写入 `risk_evidence`。
 
-### 4.4 闸门：防幻觉三条硬规则
+### 4.5 闸门：防幻觉三条硬规则
 
 1. JSON 解析失败必须重试或报错（在 provider 层）
 2. 引用无法锚定必须标记（`unanchored=1`），不得丢弃或伪造
@@ -142,26 +177,39 @@ pending
 
 ---
 
-## 5. 实测数据（设备采购合同-高风险样本.docx）
+## 5. 实测数据（4 份样本，批次 9 全绿）
 
 ```
-解析:      WPS COM 转 PDF，2 页，1.9 s
-条款切分:  10 条
-元数据:    8 项（甲乙方名称/信用代码、金额、币种、合同编号、履行期限）
-规则命中:  6 项
-LLM 研判:  MockProvider（真实端点另测通过）
-合并结果:  规则独有 4 / LLM 独有 0 / 双来源 2 / 取高升级 0
-整体风险:  high  结论: reject
+采购 设备采购合同-高风险样本.docx   high / reject  高=4 中=2  共 6 项
+采购 设备采购合同-扫描件.pdf        high / reject  高=4 中=2  共 6 项（走 OCR 链路）
+销售 产品销售合同-高风险样本.docx   high / reject  高=3 中=2  共 5 项
+劳动 劳动合同-高风险样本.docx       high / reject  高=4 中=2  共 6 项
 ```
 
-| seq | 等级 | 来源 | 锚定 | 风险项 |
-|---|---|---|---|---|
-| 0 | high | rule | paragraph | 未设置付款前置验收 |
-| 1 | high | both | exact | 违约责任无上限 |
-| 2 | high | rule | exact | 管辖地约定违规 |
-| 3 | high | both | exact | 知识产权全部转让对方 |
-| 4 | medium | rule | paragraph | 保密义务无期限 |
-| 5 | medium | rule | paragraph | 不可抗力无通知时效 |
+| 样本 | seq | 等级 | 来源 | 锚定 | 风险项 |
+|---|---|---|---|---|---|
+| 采购 | 0 | high | both | paragraph | 未设置付款前置验收 |
+| 采购 | 1 | high | both | exact | 违约责任无上限 |
+| 采购 | 2 | high | both | exact | 管辖地约定违规 |
+| 采购 | 3 | high | both | exact | 知识产权全部转让对方 |
+| 采购 | 4 | medium | both | paragraph | 保密义务无期限 |
+| 采购 | 5 | medium | both | paragraph | 不可抗力无通知时效 |
+| 销售 | 0 | high | rule | exact | 违约责任不对等 |
+| 销售 | 1 | high | both | exact | 违约责任无上限 |
+| 销售 | 2 | high | both | exact | 管辖地约定违规 |
+| 销售 | 3 | medium | both | paragraph | 保密义务无期限 |
+| 销售 | 4 | medium | both | paragraph | 不可抗力无通知时效 |
+| 劳动 | 0 | high | rule | exact | 试用期工资低于法定下限 |
+| 劳动 | 1 | high | rule | exact | 约定放弃缴纳社会保险 |
+| 劳动 | 2 | high | rule | exact | 约定不支付加班费 |
+| 劳动 | 3 | high | both | exact | 对劳动者约定违约金 |
+| 劳动 | 4 | medium | rule | paragraph | 竞业限制未约定补偿 |
+| 劳动 | 5 | medium | rule | paragraph | 保密义务无期限 |
+
+**采购样本的 `merged_by` 从批次 8 的 `rule`/`both` 混合变成全 `both`**：
+批次 9 让 MockProvider 收集**全部**命中组（原先命中第一组就 return），
+LLM 侧因此多回了"到货即付全款无验收条款"，与规则项合并成双来源。
+风险总数不变（6 条），断言集按关键词匹配，**有意不校验 `merged_by`**（见 R17）。
 
 > `paragraph` 级的项是 `GLOBAL` 类问题（必备条款缺失 / 无固定位置）。
 > 它们锚定**整条条款**（含标题与正文；跨页条款按页各产出一个锚点），
@@ -182,6 +230,12 @@ LLM 研判:  MockProvider（真实端点另测通过）
 | 6 | `within_clause_type` 表达力缺口 | "付款未以验收为前置"用存在性判定会漏报 | 新增 `within_clause_type`：在指定类型条款内检查必须模式 |
 | 7 | 转换产物只登记不上传 | `pdf_object_key` 指向 MinIO 里不存在的对象 | 先 `put_object` 再写 key，失败则不登记 |
 | 8 | `contract` 冗余字段从不回填 | 大盘页要显示的金额/编号永远为 NULL | 新增 `_backfill_contract_fields`，不覆盖已有值 |
+| 9 | `LIABILITY_UNEQUAL` 与 `PENALTY_OVER_LIMIT` 配置完全相同 | 同一事实必报 high + medium 两条，"不对等"语义从未被判定 | 批次 9：新增 metric `liability_asymmetry`（跨条款重责/轻责并存） |
+| 10 | 规则种子的"条件运算符"可配但引擎不读 | `blacklist` 只填 `contains` 而不填 `config.blacklist` 时正文明明含词却 0 命中 | 批次 9：`rule_config._READ_CONDITION_OPS` 按类型白名单，`_NEVER_READ_OPS` 直接拒 |
+| 11 | `NO_ACCEPTANCE_BEFORE_PAY` 锚到 payment 类的**第一条** | 实测锚到"合同金额"而非"付款方式"；高亮指错段落，且与 LLM 同类结论无法合并 | 批次 9：`_guess_anchor_clause` 新增 `within + required_pattern + anchor_keywords` |
+| 12 | 劳动合同必报"合同金额缺失" | 每份劳动合同稳定产生一条假阳性 | 批次 9：`global_checker` 必备元数据按业务类型区分（`_TRANSACTIONAL_TYPES`） |
+| 13 | Mock 回放命中第一组即 return | 含多风险的条款只回一条，走不到多风险合并与双来源留痕 | 批次 9：`_match` 收集全部命中组并按 title 去重 |
+| 14 | **WPS COM 并发转换必挂**（`Visible can not be set`） | mock 待办 1→3 条后，3 个并发转换线程必挂 1 个，合同被误判 `blocked: converter_unavailable` | 批次 9：`Dispatch` → `DispatchEx`（不复用已 Quit 的实例），并把 `Close`/`Quit` 移进 `_COM_LOCK` |
 
 ---
 
@@ -203,6 +257,9 @@ Windows fatal exception: code 0x800706be
 
 - 依赖**交互式桌面会话**，后端若跑成 Windows 服务会失败（架构 R1）
 - 多线程下必须本线程 `CoInitialize()`；本模块用全局锁串行化
+- **必须用 `DispatchEx` 而非 `Dispatch`**：后者是"连接已有实例"语义，前一个线程
+  `Quit()` 后，后一个线程拿到的是**已被关掉的代理**，设 `Visible` 必失败。
+  锁还必须覆盖 `Close` / `Quit`（完整生命周期），否则 B 线程会撞上 A 正在关闭的实例
 - 分页结果与 Word/LibreOffice **可能不同**，报告须标注"页码基于 WPS 排版"
 
 ### 7.3 测试里的 ORM 缓存坑
@@ -211,9 +268,11 @@ Windows fatal exception: code 0x800706be
 
 ### 7.4 尚未做
 
-PDF 报告精排、合同版本管理、批量审查（迁 Celery）。
+PDF 报告精排、合同版本管理、批量审查（迁 Celery）、
+`service` 模板的规则与样本、`compute_timeout` / `mark_stale_tasks` 接线（与 R11 同源）。
 
-> 规则配置页随批次 7 交付、扫描件 OCR 链路随批次 8 交付，
+> 规则配置页随批次 7 交付、扫描件 OCR 链路随批次 8 交付、
+> 销售/劳动样本与完整断言集随批次 9 交付，
 > blocked 重试 UI 随工作台一并交付，均不在本清单。
 
 ---

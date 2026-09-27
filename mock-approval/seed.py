@@ -60,6 +60,38 @@ TODOS: list[dict] = [
             },
         ],
     },
+    {
+        "approval_no": "AP-2026-0002",
+        "title": "产品销售合同（高风险样本）",
+        "applicant": "李四",
+        "applicant_dept": "销售管理部",
+        "business_type": "sales",
+        "counterparty": "某某商贸有限公司",
+        "status": "pending",
+        "attachments": [
+            {
+                "attachment_id": "att1",
+                "file_name": "产品销售合同-高风险样本.docx",
+                "sample_path": "sales/产品销售合同-高风险样本.docx",
+            },
+        ],
+    },
+    {
+        "approval_no": "AP-2026-0003",
+        "title": "劳动合同（高风险样本）",
+        "applicant": "王五",
+        "applicant_dept": "人力资源部",
+        "business_type": "labor",
+        "counterparty": "某某科技有限公司",
+        "status": "pending",
+        "attachments": [
+            {
+                "attachment_id": "att1",
+                "file_name": "劳动合同-高风险样本.docx",
+                "sample_path": "labor/劳动合同-高风险样本.docx",
+            },
+        ],
+    },
 ]
 
 

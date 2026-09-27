@@ -70,7 +70,7 @@ import { BUSINESS_TYPE_LABEL, RISK_META } from "../constants";
 const CONFIG_HINT: Record<string, string> = {
   keyword: "关键词之间是「或」关系；多个关键词填在下方条件里，或用逗号分隔。",
   regex: "正则表达式直接写在条件里（operator = regex）。",
-  threshold: "阈值规则需要 metric / threshold / direction 三个参数。",
+  threshold: "阈值规则按「指标」决定参数：比例/金额类需要 metric + threshold + direction；不对等类只需重责侧表述。",
   presence: "存在性检查：可要求必备条款类型、必备元数据键，或指定条款内必须出现的文本。",
   blacklist: "黑名单：填关键词列表，或把 source 设为 subject_blacklist 走主体库。",
 };
@@ -643,6 +643,12 @@ function RuleDrawer({ rule, templateId, onClose, onSaved }: RuleDrawerProps) {
   const opts = optionsQ.data;
   const [ruleType, setRuleType] = useState<string>(rule?.rule_type ?? "keyword");
   /**
+   * 实时跟随「指标」下拉：
+   * 不对等指标没有阈值，表单必须据此隐藏阈值与比较方向两列——
+   * 只显示会让用户填一个后端根本不读的数字（"配了等于没配"）。
+   */
+  const metricValue = Form.useWatch<string | undefined>("metric", form);
+  /**
    * 条件列表。
    *
    * **新建时默认为空**，不预置"半填"的模板行：预置行的 value 为空，
@@ -727,6 +733,9 @@ function RuleDrawer({ rule, templateId, onClose, onSaved }: RuleDrawerProps) {
           within_clause_type: rule?.config?.within_clause_type,
           blacklist: (rule?.config?.blacklist as string[] | undefined)?.join("，"),
           source_is_subject: rule?.config?.source === "subject_blacklist",
+          severe_keywords: (rule?.config?.severe_keywords as string[] | undefined)?.join("，"),
+          mild_keywords: (rule?.config?.mild_keywords as string[] | undefined)?.join("，"),
+          mild_ratio_max: rule?.config?.mild_ratio_max,
         }}
       >
         <Row gutter={12}>
@@ -777,7 +786,9 @@ function RuleDrawer({ rule, templateId, onClose, onSaved }: RuleDrawerProps) {
               />
             </Form.Item>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {CONFIG_HINT[ruleType]}
+              {ruleType === "threshold" && metricValue === "liability_asymmetry"
+                ? "违约责任不对等判定的是「重责表述与轻责表述同时存在」，没有阈值与比较方向。"
+                : CONFIG_HINT[ruleType]}
             </Typography.Text>
           </Col>
         </Row>
@@ -799,31 +810,72 @@ function RuleDrawer({ rule, templateId, onClose, onSaved }: RuleDrawerProps) {
         )}
 
         {ruleType === "threshold" && (
-          <Row gutter={12}>
-            <Col span={10}>
-              <Form.Item name="metric" label="指标" rules={[{ required: true }]}>
-                <Select options={opts?.metric} />
-              </Form.Item>
-            </Col>
-            <Col span={7}>
-              <Form.Item name="threshold" label="阈值" rules={[{ required: true }]}>
-                <InputNumber style={{ width: "100%" }} step={0.01} placeholder="0.20" />
-              </Form.Item>
-            </Col>
-            <Col span={7}>
-              <Form.Item name="direction" label="比较方向" rules={[{ required: true }]}>
-                <Select
-                  options={[
-                    { value: "gt", label: "大于" },
-                    { value: "gte", label: "大于等于" },
-                    { value: "lt", label: "小于" },
-                    { value: "lte", label: "小于等于" },
-                    { value: "eq", label: "等于" },
-                  ]}
-                />
-              </Form.Item>
-            </Col>
-          </Row>
+          <>
+            <Row gutter={12}>
+              <Col span={12}>
+                <Form.Item name="metric" label="指标" rules={[{ required: true }]}>
+                  <Select options={opts?.metric} />
+                </Form.Item>
+              </Col>
+              {/* 不对等指标判的是"两种表述并存"，阈值/比较方向对它无意义，
+                  只显示会引诱用户去填一个不生效的数字 */}
+              {metricValue !== "liability_asymmetry" && (
+                <>
+                  <Col span={6}>
+                    <Form.Item name="threshold" label="阈值" rules={[{ required: true }]}>
+                      <InputNumber style={{ width: "100%" }} step={0.01} placeholder="0.20" />
+                    </Form.Item>
+                  </Col>
+                  <Col span={6}>
+                    <Form.Item name="direction" label="比较方向" rules={[{ required: true }]}>
+                      <Select
+                        options={[
+                          { value: "gt", label: "大于" },
+                          { value: "gte", label: "大于等于" },
+                          { value: "lt", label: "小于" },
+                          { value: "lte", label: "小于等于" },
+                          { value: "eq", label: "等于" },
+                        ]}
+                      />
+                    </Form.Item>
+                  </Col>
+                </>
+              )}
+            </Row>
+
+            {metricValue === "liability_asymmetry" && (
+              <Row gutter={12}>
+                <Col span={12}>
+                  <Form.Item
+                    name="severe_keywords"
+                    label="重责侧表述（逗号分隔，命中其一即算存在）"
+                    rules={[{ required: true, message: "至少填一个重责侧关键词" }]}
+                    extra="如：全部损失，无上限，一切损失"
+                  >
+                    <Input placeholder="全部损失，无上限" />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item
+                    name="mild_keywords"
+                    label="轻责侧表述（逗号分隔，可选）"
+                    extra="如：万分之一，累计不超过"
+                  >
+                    <Input placeholder="万分之一，每日按应付未付金额" />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item
+                    name="mild_ratio_max"
+                    label="轻责侧比例上限（%，可选）"
+                    extra="与上一项任一命中即成立；如填 0.05 表示轻责比例不超过 0.05%"
+                  >
+                    <InputNumber style={{ width: "100%" }} step={0.01} placeholder="0.05" />
+                  </Form.Item>
+                </Col>
+              </Row>
+            )}
+          </>
         )}
 
         {ruleType === "presence" && (
@@ -946,7 +998,15 @@ function RuleDrawer({ rule, templateId, onClose, onSaved }: RuleDrawerProps) {
           </Space>
         </Form.Item>
 
-        <Form.Item name="result_template" label="结论模板" extra="可用 {threshold} / {clause_no} / {value} 占位">
+        <Form.Item
+          name="result_template"
+          label="结论模板"
+          extra={
+            ruleType === "threshold" && metricValue !== "liability_asymmetry"
+              ? "可用 {threshold} / {clause_no} / {value} 占位"
+              : "可用 {clause_no} / {value} 占位（不对等判定无 threshold）"
+          }
+        >
           <Input.TextArea rows={2} placeholder="违约责任未设赔偿上限，我方责任敞口不可预估。" />
         </Form.Item>
         <Form.Item name="suggestion_template" label="推荐修改条款模板">
@@ -973,6 +1033,20 @@ function buildConfig(ruleType: string, v: Record<string, unknown>): Record<strin
     return { keywords, match_all: Boolean(v.match_all) };
   }
   if (ruleType === "threshold") {
+    // 不对等判定没有阈值：它判的是"重责表述与轻责表述并存"，不是"某值超限"。
+    // 照搬 threshold/direction 会让后端校验拒收（那里也不接受多余字段语义）。
+    if (v.metric === "liability_asymmetry") {
+      const cfg: Record<string, unknown> = {
+        metric: "liability_asymmetry",
+        severe_keywords: splitList(v.severe_keywords),
+      };
+      const mild = splitList(v.mild_keywords);
+      if (mild.length) cfg.mild_keywords = mild;
+      if (v.mild_ratio_max !== undefined && v.mild_ratio_max !== null) {
+        cfg.mild_ratio_max = v.mild_ratio_max;
+      }
+      return cfg;
+    }
     return {
       metric: v.metric,
       threshold: v.threshold,

@@ -39,7 +39,13 @@ class RuleConfigError(ValueError):
 SUPPORTED_METRICS: dict[str, str] = {
     "penalty_ratio": "违约金比例（从条款文本提取百分比）",
     "amount": "合同金额（取 metadata.amount）",
+    "liability_asymmetry": "违约责任不对等（重责表述与轻责表述并存，无需阈值）",
+    "probation_pay_ratio": "试用期工资比例（从含「试用期」的条款提取百分比）",
 }
+
+#: 不需要 `config.threshold` 的 metric。它们判定的不是"某个值超限"，
+#: 而是"两种表述并存"，因此填阈值既不生效、又会让用户以为阈值有用。
+_METRICS_WITHOUT_THRESHOLD = {"liability_asymmetry"}
 
 #: 条件可作用的字段前缀。引擎按前缀分派（`clause.` / `metadata.`）。
 _FIELD_PREFIXES = ("clause.", "metadata.")
@@ -111,6 +117,48 @@ def _check_enum(value: str, enum_cls, label: str) -> None:
         raise RuleConfigError(f"{label} {value!r} 非法，可选：{allowed}") from None
 
 
+#: 引擎**真的会读**的运算符，按能读它的规则类型分组。
+#:
+#: ⚠️ 这张表是 `rule_engine` 读取逻辑的快照，两边改动必须同步。
+#: 写不在表里的组合，前端能存、引擎永不读——正是批次 7 修掉的那类
+#: "配了等于没配"，只是换了个运算符（实测 `blacklist` 规则只填
+#: `contains` 条件、不填 `config.blacklist` 时，正文明明含命中词也 0 命中）。
+#:
+#: - `contains`：KEYWORD（并入关键词列表）、BLACKLIST（并入黑名单条目）
+#: - `regex`：REGEX（模式）、BLACKLIST（条目）
+#: - `not_exists`：PRESENCE（`clause.clause_type` 表示"某类条款必须存在"，
+#:   `metadata.*` 表示"某键必须存在"）
+_READ_CONDITION_OPS: dict[str, frozenset[str]] = {
+    RuleType.KEYWORD.value: frozenset({RuleOperator.CONTAINS.value}),
+    RuleType.REGEX.value: frozenset({RuleOperator.REGEX.value}),
+    RuleType.BLACKLIST.value: frozenset({
+        RuleOperator.CONTAINS.value, RuleOperator.REGEX.value,
+    }),
+    RuleType.PRESENCE.value: frozenset({RuleOperator.NOT_EXISTS.value}),
+    RuleType.THRESHOLD.value: frozenset(),
+}
+
+#: **所有规则类型都接受**的条件运算符。目前只有 `exists`。
+#:
+#: 它表达的是"前置守卫"（如"有金额才做比例判定"）：引擎虽不从条件里读它，
+#: 但各 `_check_*` / `_apply_presence` 内部已实现等价判断，条件本身是
+#: **冗余而语义一致**的。拒掉会误伤库里 7 条既有规则，因此放行。
+_UNIVERSAL_CONDITION_OPS: frozenset[str] = frozenset({RuleOperator.EXISTS.value})
+
+#: **任何规则类型都不会读取**的运算符。填了必定静默失效，直接拒。
+#:
+#: 与 `exists` 的处境不同：`not_contains` / 比较类运算符表达的是引擎
+#: 根本不具备的能力，留着只会让人以为已经配上了。
+_NEVER_READ_OPS: frozenset[str] = frozenset({
+    RuleOperator.NOT_CONTAINS.value,
+    RuleOperator.GT.value,
+    RuleOperator.GTE.value,
+    RuleOperator.LT.value,
+    RuleOperator.LTE.value,
+    RuleOperator.EQ.value,
+})
+
+
 def _validate_condition(cond: dict, rule_type: str, *, index: int) -> None:
     """校验单个条件。"""
     field = (cond.get("field") or "").strip()
@@ -125,6 +173,19 @@ def _validate_condition(cond: dict, rule_type: str, *, index: int) -> None:
         raise RuleConfigError(
             f"{where}：字段 {field!r} 无法被引擎解释，"
             f"必须以 {' 或 '.join(_FIELD_PREFIXES)} 开头"
+        )
+
+    if operator in _NEVER_READ_OPS:
+        raise RuleConfigError(
+            f"{where}：运算符 {operator!r} 不会被引擎读取，条件必然静默失效。"
+            "请改用规则类型自身的 config 参数表达"
+        )
+    readable = _READ_CONDITION_OPS.get(rule_type, frozenset())
+    if operator not in readable and operator not in _UNIVERSAL_CONDITION_OPS:
+        raise RuleConfigError(
+            f"{where}：{rule_type} 规则不读取 {operator!r} 条件"
+            f"（可读：{'、'.join(sorted(readable)) or '无'}）。"
+            "这类条件会静默失效——请改用规则类型自身的 config 参数表达"
         )
 
     prefix, _, key = field.partition(".")
@@ -176,6 +237,26 @@ def _check_regex(pattern: str | None, where: str) -> None:
         raise RuleConfigError(f"{where}：正则表达式非法（{exc}）") from exc
 
 
+#: 各 metric 的专属必填参数。对应 `rule_engine._check_*` 的读取逻辑。
+_METRIC_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
+    "liability_asymmetry": ("severe_keywords",),
+}
+
+
+def _validate_by_metric(metric: str, config: dict) -> None:
+    """校验 metric 的专属参数。
+
+    与 `_validate_by_type` 同样的理由：引擎读不到的配置等于没配，
+    必须在保存时报 400，而不是等审查时静默不命中。
+    """
+    for key in _METRIC_REQUIRED_KEYS.get(metric, ()):
+        value = config.get(key)
+        if not value:
+            raise RuleConfigError(
+                f"metric {metric!r} 必须提供 config.{key}（非空列表）"
+            )
+
+
 def _validate_by_type(spec: RuleSpec, conditions: list[dict]) -> None:
     """按规则类型校验其专属参数。对应 `rule_engine` 各 `_apply_*` 的读取逻辑。"""
     config = spec.config or {}
@@ -208,6 +289,12 @@ def _validate_by_type(spec: RuleSpec, conditions: list[dict]) -> None:
             raise RuleConfigError(
                 f"阈值规则缺少可用的 metric，可选：{'、'.join(SUPPORTED_METRICS)}"
             )
+
+        if metric in _METRICS_WITHOUT_THRESHOLD:
+            # 这一类指标判定"两种表述并存"，阈值字段不参与运算
+            _validate_by_metric(metric, config)
+            return
+
         if config.get("threshold") is None:
             raise RuleConfigError("阈值规则必须提供 config.threshold")
         try:

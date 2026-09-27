@@ -174,13 +174,27 @@ REQUIRED_CLAUSE_TYPES: dict[str, tuple[str, ...]] = {
     "labor": ("payment", "liability"),
 }
 
-#: 必备元数据键。缺失即报风险（见 docs/data-model.md §3.5 的"缺失时风险"列）
-REQUIRED_METADATA: tuple[tuple[MetadataKey, str, str], ...] = (
+#: 必备元数据键，**按业务类型区分**。缺失即报风险
+#: （见 docs/data-model.md §3.5 的"缺失时风险"列）。
+#:
+#: ⚠️ 为什么必须分类型（批次 9 实测缺陷）：`amount` / `currency` 只对**交易类**
+#: 合同（采购/销售/服务）有意义。劳动合同根本没有"合同金额"这个字段，
+#: 用同一份清单会导致**每份劳动合同都必报"合同金额缺失"**——这类稳定的
+#: 假阳性会训练用户忽略告警，比漏报更伤。`party_a/b_name` 则各类合同通用
+#: （用人单位与劳动者同样是签约主体）。
+REQUIRED_METADATA_COMMON: tuple[tuple[MetadataKey, str, str], ...] = (
     (MetadataKey.PARTY_A_NAME, "high", "甲方名称缺失，无法核实主体资质"),
     (MetadataKey.PARTY_B_NAME, "high", "乙方名称缺失，无法核实主体资质"),
+)
+
+#: 交易类合同（有金额与币种）额外要求的元数据。
+REQUIRED_METADATA_TRANSACTIONAL: tuple[tuple[MetadataKey, str, str], ...] = (
     (MetadataKey.AMOUNT, "medium", "合同金额缺失，比例类规则无法判定"),
     (MetadataKey.CURRENCY, "medium", "币种缺失，涉外场景下金额存在歧义"),
 )
+
+#: 需要金额/币种的业务类型。劳动合同不在其中。
+_TRANSACTIONAL_TYPES: frozenset[str] = frozenset({"purchase", "sales", "service"})
 
 
 def check_global(
@@ -204,7 +218,11 @@ def check_global(
                 "reason": f"合同缺少必备条款类型：{ctype}",
             })
 
-    for key, level, reason in REQUIRED_METADATA:
+    required_meta = REQUIRED_METADATA_COMMON
+    if business_type in _TRANSACTIONAL_TYPES:
+        required_meta = required_meta + REQUIRED_METADATA_TRANSACTIONAL
+
+    for key, level, reason in required_meta:
         if key.value not in present_keys:
             missing.append({
                 "kind": "metadata",

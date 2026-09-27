@@ -175,15 +175,26 @@ class RuleEngine:
     def _apply_threshold(self, rule: Rule) -> RuleHit | None:
         """阈值比较。
 
-        目前支持两类指标：
+        目前支持四类指标（前三类需要 threshold，最后一类不需要）：
         - `penalty_ratio`：违约金比例（需从条款里提取比例）
         - `amount`：金额本身（需 metadata.amount）
+        - `probation_pay_ratio`：试用期工资比例（见 `_check_probation_pay`）
+        - `liability_asymmetry`：违约责任不对等（见 `_check_liability_asymmetry`）
         """
         config = rule.config or {}
         metric = config.get("metric")
+        if metric is None:
+            return None
+
+        # 不对等判定不需要 threshold（它不是"某个值超限"，而是"两种表述并存"），
+        # 因此在取阈值之前分派，否则会被下方的 threshold 校验拦掉。
+        if metric == "liability_asymmetry":
+            return self._check_liability_asymmetry(rule)
+
         threshold = config.get("threshold")
         direction = config.get("direction", "gt")
-        if threshold is None or metric is None:
+        if threshold is None:
+            logger.error("规则 %s 缺少 threshold", rule.code)
             return None
 
         try:
@@ -196,8 +207,116 @@ class RuleEngine:
             return self._check_penalty_ratio(rule, threshold_d, direction)
         if metric == "amount":
             return self._check_amount(rule, threshold_d, direction)
+        if metric == "probation_pay_ratio":
+            return self._check_probation_pay(rule, threshold_d, direction)
         logger.warning("未知 threshold metric: %s（规则 %s）", metric, rule.code)
         return None
+
+    def _check_probation_pay(
+        self, rule: Rule, threshold: Decimal, direction: str
+    ) -> RuleHit | None:
+        """试用期工资比例（《劳动合同法》第二十条：不得低于本单位相同岗位最低档
+        工资或者劳动合同约定工资的 80%）。
+
+        **为什么不能复用 `penalty_ratio`**：后者扫描**任意**条款里的第一个百分比，
+        在劳动合同里会抓到"试用期 3 个月"之外的业务数字（如绩效比例、公积金比例），
+        给出无关结论。这里只在**含"试用期"的条款**里取比例，语义明确。
+
+        只做这一件窄事：找到试用期条款 → 提取其中的百分比 → 与法定下限比较。
+        """
+        for idx, clause in enumerate(self.inp.clauses):
+            if "试用期" not in clause.content:
+                continue
+            ratio = _extract_ratio(clause.content)
+            if ratio is None:
+                # 只写"试用期 3 个月"而未约定工资比例的，属另一种问题
+                # （约定不完整），不在本规则的判定范围，交给人工/其他规则
+                continue
+            if _compare(ratio, threshold, direction):
+                return self._make_hit(
+                    rule, idx, quote=self._quote_around(clause.content, "试用期"),
+                    detail=(f"试用期工资比例 {ratio}% 触发阈值 "
+                            f"{threshold}%（条件 {direction}）"),
+                )
+        return None
+
+    def _check_liability_asymmetry(self, rule: Rule) -> RuleHit | None:
+        """违约责任不对等（PRD 2.4.4「违约责任严重不对等」）。
+
+        **为什么现有规则类型表达不了**：`LIABILITY_UNCAPPED` 用 KEYWORD 判定
+        "出现无上限字样"，它对双方一视同仁——不论是我方还是对方无上限都命中，
+        因此测不出"**一方**无上限、**另一方**被压到极小比例"这种不对等。
+        而 KEYWORD 的 `match_all` 只要求多个关键词落在**同一条**条款里，
+        跨条款的重责/轻责表述（实务中通常分列两条）也匹配不到。
+
+        本判定的语义（**关键词并存的启发式**，不做当事人方向的自然语言理解）：
+
+            全文同时存在"重责侧表述"与"轻责侧表述" ⟹ 判定为不对等
+
+        这是**有意保守**的取舍：宁可把"双方同时写了无上限与限额"这种少数情形
+        也算命中（人工复核成本低），也不去猜测"这两句分别是谁的责任"——
+        后者需要真正的语义理解，用关键词硬猜会给出**看起来精确但实际错误**
+        的结论，比不判更危险。命中理由里会写明命中的是哪些表述。
+
+        config：
+            severe_keywords: list[str]   重责侧表述（如"全部损失"/"无上限"），必填
+            mild_keywords:   list[str]   轻责侧表述（如"万分之一"/"累计不超过"），选填
+            mild_ratio_max:  float       轻责侧比例上限（百分比数值，0.01 即 0.01%），选填
+        """
+        config = rule.config or {}
+        severe: list[str] = [k for k in (config.get("severe_keywords") or []) if k]
+        mild: list[str] = [k for k in (config.get("mild_keywords") or []) if k]
+        mild_ratio_max = config.get("mild_ratio_max")
+        if not severe:
+            logger.error("规则 %s 缺少 config.severe_keywords，无法判定不对等", rule.code)
+            return None
+
+        severe_at: tuple[int, str] | None = None
+        for idx, clause in enumerate(self.inp.clauses):
+            for kw in severe:
+                if kw in clause.content:
+                    severe_at = (idx, kw)
+                    break
+            if severe_at:
+                break
+        if severe_at is None:
+            return None
+
+        mild_hit: tuple[str, str] | None = None  # (描述, 用于锚定引用的关键词)
+        for idx, clause in enumerate(self.inp.clauses):
+            for kw in mild:
+                if kw in clause.content:
+                    mild_hit = (f"轻责表述 {kw!r}", kw)
+                    break
+            if mild_hit:
+                break
+
+        # 轻责侧也可以由"极小比例"体现（如"违约金 0.01%"），不限于固定词表
+        if mild_hit is None and mild_ratio_max is not None:
+            try:
+                cap = Decimal(str(mild_ratio_max))
+            except InvalidOperation:
+                logger.error("规则 %s 的 mild_ratio_max 非法: %r", rule.code, mild_ratio_max)
+                cap = None
+            if cap is not None:
+                for clause in self.inp.clauses:
+                    ratio = _extract_ratio(clause.content)
+                    if ratio is not None and ratio <= cap:
+                        mild_hit = (f"轻责比例 {ratio}%（不超过 {cap}%）", "%")
+                        break
+
+        if mild_hit is None:
+            # 只有"重责"没有"轻责"→ 属于单侧无上限，交给 LIABILITY_UNCAPPED，
+            # 这里不重复报（避免同一事实产出两条风险，稀释报告可读性）
+            return None
+
+        idx, severe_kw = severe_at
+        clause = self.inp.clauses[idx]
+        return self._make_hit(
+            rule, idx, quote=self._quote_around(clause.content, severe_kw),
+            detail=(f"责任不对等：存在重责表述 {severe_kw!r}，"
+                    f"同时存在{mild_hit[0]}（条款 {clause.clause_no or clause.seq}）"),
+        )
 
     def _check_penalty_ratio(
         self, rule: Rule, threshold: Decimal, direction: str
@@ -317,7 +436,9 @@ class RuleEngine:
         # 尽量给出条款下标：虽然是"全局判断"，但缺失项往往对应某个
         # 确实存在的条款（如"保密条款没写期限"），锚定过去能让前端
         # 直接跳到相关段落，而不是只能显示"无法定位"。
-        clause_index = self._guess_anchor_clause(rule, required_types, required_pattern)
+        clause_index = self._guess_anchor_clause(
+            rule, required_types, required_pattern, within=within,
+        )
         return self._make_hit(
             rule, clause_index, detail=f"存在性检查失败，缺失: {missing}"
         )
@@ -327,13 +448,24 @@ class RuleEngine:
         rule: Rule,
         required_types: list[str],
         required_pattern: str | None,
+        *,
+        within: str | None = None,
     ) -> int | None:
         """为全局性缺失项推测一个可锚定的条款。
 
         策略（按可靠性排序）：
-        1. `config.anchor_clause_type` 显式指定
-        2. `required_types` 里第一个在文档中存在的条款类型
-        3. 按风险分类到条款类型的映射（如 confidentiality → confidentiality）
+        1. `config.anchor_clause_type` + `config.anchor_keywords` 精确定位
+        2. `within_clause_type` 类条款中**缺少 required_pattern 的那条**
+        3. `required_types` 里第一个在文档中存在的条款类型
+        4. 按风险分类到条款类型的映射（如 confidentiality → confidentiality）
+
+        第 2 条是批次 9 新增的：`within + required_pattern` 判定失败时，
+        "出问题的是哪条条款"其实已经确定——缺少该模式的那些条款。
+        不做这一步而只取该类型的**第一条**，会在同一类型有多条条款时锚错：
+        实测采购样本里「合同金额」与「付款方式」都被归为 payment 类，
+        取第一条会锚到"合同金额"，而这条风险说的是付款条款——
+        高亮指向错误段落，还会让它与 LLM 的同类结论无法合并（同一事实
+        在报告里出现两张卡片）。
         """
         config = rule.config or {}
 
@@ -342,6 +474,20 @@ class RuleEngine:
             idx = self._first_clause_of_type(explicit)
             if idx is not None:
                 return idx
+
+        # within + pattern：锚到"该类条款中缺少该模式"的那条，可再用
+        # anchor_keywords 在候选里挑最贴合的那条（如付款条款里含"付款/支付"的）
+        if within and required_pattern:
+            candidates = [
+                i for i, c in enumerate(self.inp.clauses)
+                if c.clause_type.value == within and required_pattern not in c.content
+            ]
+            if candidates:
+                prefer = [k for k in (config.get("anchor_keywords") or []) if k]
+                for i in candidates:
+                    if any(k in self.inp.clauses[i].content for k in prefer):
+                        return i
+                return candidates[0]
 
         for ctype in required_types:
             idx = self._first_clause_of_type(ctype)

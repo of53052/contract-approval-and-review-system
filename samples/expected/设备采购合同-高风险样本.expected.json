@@ -28,7 +28,7 @@
       "must_anchor": true,
       "expected_anchor_page": 1,
       "why": "PRD 2.4.9 场景一：付款不以验收为前提，先付款后验收",
-      "anchor_quote": "第四条验收标准",
+      "anchor_quote": "第三条付款方式\n货物到货即付全款，甲方应在到货后3 日内支付全部款项。",
       "expected_anchor_level": "paragraph"
     },
     {

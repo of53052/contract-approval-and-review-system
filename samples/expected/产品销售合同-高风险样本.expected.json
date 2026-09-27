@@ -1,0 +1,71 @@
+{
+  "contract": "产品销售合同-高风险样本.docx",
+  "sample_dir": "sales",
+  "business_type": "sales",
+  "note": "销售合同（我方为供方）。覆盖 PRD 2.4.9 场景二：客户方仅承担每日万分之一滞纳金，而我方承担无上限赔偿责任——这类『责任不对等』由一个跨条款判定（liability_asymmetry）命中，与单纯『无上限』是两条不同的风险。anchor_quote 按解析后落库的 quote_text 书写。",
+  "expected_overall": "high",
+  "expected_conclusion": "reject",
+  "expected_risks": [
+    {
+      "title": "违约责任不对等",
+      "match_keywords": [
+        "不对等"
+      ],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "PRD 2.4.9 场景二：我方承担无上限赔偿责任，客户方仅承担万分之一滞纳金，责任严重不对等",
+      "anchor_quote": "逾期付款的，每日按应付未付金额的万分之一支付滞纳金；甲方逾期交货的，\n应承担乙方全部损失，赔偿责任无上限。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "违约责任无上限",
+      "match_keywords": [
+        "无上限"
+      ],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "单侧无上限：规则与 LLM 均命中，取高后为高风险",
+      "anchor_quote": "应付未付金额的万分之一支付滞纳金；甲方逾期交货的，\n应承担乙方全部损失，赔偿责任无上限。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "管辖地约定违规",
+      "match_keywords": [
+        "管辖",
+        "香港仲裁"
+      ],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "约定香港仲裁，维权成本高",
+      "anchor_quote": "第七条争议解决\n因本合同产生的争议，提交香港仲裁。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "保密义务无期限",
+      "match_keywords": [
+        "保密"
+      ],
+      "risk_level": "medium",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "保密义务未约定期限",
+      "anchor_quote": "第六条保密义务\n双方对因履行本合同知悉的商业秘密负有保密义务。",
+      "expected_anchor_level": "paragraph"
+    },
+    {
+      "title": "不可抗力无通知时效",
+      "match_keywords": [
+        "不可抗力"
+      ],
+      "risk_level": "medium",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "未约定通知时效与证明文件要求",
+      "anchor_quote": "第八条不可抗力\n因不可抗力不能履行的，受影响方应及时通知对方。",
+      "expected_anchor_level": "paragraph"
+    }
+  ]
+}

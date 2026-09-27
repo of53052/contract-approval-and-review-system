@@ -79,9 +79,21 @@ cd mock-approval
 
 `seed.py` 会：
 
-- 把 `samples/purchase/*.docx` 复制到 `data/attachments/`
-- 生成 `data/todos.json`（当前 1 条待办 `AP-2026-0001`）
+- 把示例合同复制到 `data/attachments/`
+- 生成 `data/todos.json`（当前 **3 条**待办，覆盖三类业务）
 - **不动** `data/comments.json`（评论是回写演示的产物）
+
+**3 条演示待办**（批次 9 扩充，此前只有 1 条采购）：
+
+| 单号 | 业务类型 | 合同 | 申请人 |
+|---|---|---|---|
+| `AP-2026-0001` | purchase | 设备采购合同-高风险样本.docx | 张三 / 供应链管理部 |
+| `AP-2026-0002` | sales | 产品销售合同-高风险样本.docx | 李四 / 销售管理部 |
+| `AP-2026-0003` | labor | 劳动合同-高风险样本.docx | 王五 / 人力资源部 |
+
+> ⚠️ **改 `todos.json` 后需重启 mock 服务**：`Store` 在 `__init__` 时载入文件，
+> 运行中不重读。`start_all.py` 会先跑 `seed.py` 再起服务，因此一键启动不受影响；
+> 但手工改了 `todos.json` 却不重启，`GET /api/todos` 仍回旧数据。
 
 数据文件都是纯 JSON，出问题时可以直接看：
 

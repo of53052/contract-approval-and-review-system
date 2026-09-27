@@ -188,8 +188,15 @@ FastAPI 统一返回：
 | `clause.` 后只能是 `content` / `clause_type` / `clause_no` / `title` | 引擎只读这四个键。`clause.payment.content` 这类直觉写法**会被静默忽略**——限定条款类型要用 `config.within_clause_type` + `required_pattern` |
 | `metadata.` 后必须是已知元数据键 | 同上 |
 | `exists` / `not_exists` 不接受 `value` | 存在性判断只看字段有无 |
+| **条件运算符必须是该规则类型真正读取的** | 引擎按 `rule_type` 分派读取逻辑：`keyword` 只读 `contains`、`regex` 只读 `regex`、`blacklist` 读 `contains`/`regex`、`presence` 读 `not_exists`、`threshold` 不读条件。填了别的（如 `keyword` 规则挂 `regex`）就是"配了等于没配" |
+| `not_contains` / `gt` / `gte` / `lt` / `lte` / `eq` 一律拒 | 引擎根本不具备这些能力，留着只会让人以为已经配上了。要表达"不含某词"请用 `presence` + `config.required_pattern` 的取反语义，或用 `config` 参数（如 `blacklist`） |
 | 正则必须能编译 | 引擎运行期会吞掉非法正则，保存时不拦就是永久不生效 |
-| 各规则类型的必填参数 | 如 threshold 必须有 `metric` + `threshold` |
+| 各规则类型的必填参数 | 如 threshold 必须有 `metric` + `threshold`；`metric=liability_asymmetry` 必须有 `config.severe_keywords` |
+| 阈值规则的表单随 `metric` 变 | `liability_asymmetry` 不需要 `threshold`/`direction`（判的是"两种表述并存"，不是"某值超限"） |
+
+> `exists` 是**唯一**被所有规则类型接受的通用条件运算符：它表达"前置守卫"
+> （如"有金额才判比例"），各 `_check_*` 内部已实现等价判断，属**冗余而语义一致**。
+> 之所以不拒，是因为库里既有 7 条规则用了它，拒掉会误伤。
 
 **`/options` 为什么由后端下发**：枚举值前后端漂移时用户能选到后端不认的值，
 保存后规则静默失效（与列表页 `risk_level` 参数名漂移同类问题）。集中下发杜绝。

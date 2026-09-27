@@ -222,11 +222,37 @@ class MockProvider:
     # ---------------- 内部 ----------------
 
     def _match(self, messages: list[ChatMessage]) -> dict[str, Any]:
-        """按关键词匹配预置结论。"""
+        """按关键词匹配预置结论，**命中多组时全部合并**。
+
+        最初的实现是"命中第一组就返回"，这会让 Mock 在同一批含多个风险的
+        条款里永远只回一条——演示时看起来像漏报，也走不到 `Merger` 的
+        多风险合并、取高升级与双来源留痕路径（真实 LLM 会一次给出多条）。
+
+        去重按 `title`：不同 fixture 的关键词可能同时命中（如某条款同时含
+        「无上限」与「违约金」），但它们指向的是同一条风险。
+        """
         blob = "\n".join(m.content for m in messages)
+        risks: list[dict[str, Any]] = []
+        seen_titles: set[str] = set()
+        matched: list[str] = []
+
         for keywords, payload in FIXTURES:
-            if any(kw in blob for kw in keywords):
-                logger.info("MockProvider 命中预置结论: %s", keywords[0])
-                return payload
-        logger.info("MockProvider 未命中任何预置结论，返回保守空结果")
-        return NO_MATCH_RESULT
+            if not any(kw in blob for kw in keywords):
+                continue
+            matched.append(keywords[0])
+            for risk in payload.get("risks", []):
+                title = str(risk.get("title") or "")
+                if title and title in seen_titles:
+                    continue
+                seen_titles.add(title)
+                risks.append(risk)
+
+        if not risks:
+            logger.info("MockProvider 未命中任何预置结论，返回保守空结果")
+            return NO_MATCH_RESULT
+
+        logger.info(
+            "MockProvider 命中 %s 组预置结论（%s），合并出 %s 条风险",
+            len(matched), "、".join(matched), len(risks),
+        )
+        return {"risks": risks}

@@ -1,0 +1,83 @@
+{
+  "contract": "劳动合同-高风险样本.docx",
+  "sample_dir": "labor",
+  "business_type": "labor",
+  "note": "劳动合同（用人单位视角）。与交易类合同不同，劳动合同没有『合同金额/币种』元数据，必备元数据校验与规则集都已按业务类型区分，不应报『合同金额缺失』。全部风险点均来自确定性规则（合法性判断不依赖 LLM 语义）。",
+  "expected_overall": "high",
+  "expected_conclusion": "reject",
+  "expected_risks": [
+    {
+      "title": "试用期工资低于法定下限",
+      "match_keywords": [
+        "试用期"
+      ],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "《劳动合同法》第二十条：试用期工资不得低于约定工资的 80%，样本为 50%",
+      "anchor_quote": "第二条试用期\n试用期为 3 个月，试用期工资为劳动合同约定工资的 50%。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "约定放弃缴纳社会保险",
+      "match_keywords": [
+        "社会保险",
+        "社保"
+      ],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "社保为法定强制义务，约定放弃无效，用人单位仍需补缴并承担工伤责任",
+      "anchor_quote": "第四条社会保险\n乙方自愿放弃甲方为其缴纳社会保险，甲方每月另行支付社保补贴 800 元。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "约定不支付加班费",
+      "match_keywords": [
+        "加班费"
+      ],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "《劳动法》第四十四条：加班须付加班费；每周工作六天亦超法定工时",
+      "anchor_quote": "第五条工作时间\n乙方每周工作六天，甲方不另行支付加班费。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "对劳动者约定违约金",
+      "match_keywords": [
+        "违约金"
+      ],
+      "risk_level": "high",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "《劳动合同法》第二十五条：除服务期与竞业限制外，不得约定劳动者承担违约金",
+      "anchor_quote": "第七条违约责任\n乙方提前离职的，应向甲方支付违约金人民币 50000 元。",
+      "expected_anchor_level": "exact"
+    },
+    {
+      "title": "竞业限制未约定补偿",
+      "match_keywords": [
+        "竞业限制"
+      ],
+      "risk_level": "medium",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "《劳动合同法》第二十三条：竞业限制须按月给予经济补偿，未约定则约束力存疑",
+      "anchor_quote": "第六条保密与竞业限制\n乙方离职后 2 年内不得从事同业竞争业务。",
+      "expected_anchor_level": "paragraph"
+    },
+    {
+      "title": "保密义务无期限",
+      "match_keywords": [
+        "保密"
+      ],
+      "risk_level": "medium",
+      "must_anchor": true,
+      "expected_anchor_page": 1,
+      "why": "保密义务未约定期限",
+      "anchor_quote": "第六条保密与竞业限制\n乙方离职后 2 年内不得从事同业竞争业务。",
+      "expected_anchor_level": "paragraph"
+    }
+  ]
+}

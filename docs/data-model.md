@@ -179,17 +179,26 @@
 
 | key | 中文标签 | value_type | 必需 | 缺失时风险 |
 |---|---|---|---|---|
-| `party_a_name` | 甲方名称 | string | ✅ | 高风险（主体信息缺失） |
-| `party_b_name` | 乙方名称 | string | ✅ | 高风险 |
-| `party_a_credit_code` | 甲方统一社会信用代码 | string | ✅ | 中风险 |
-| `party_b_credit_code` | 乙方统一社会信用代码 | string | ✅ | 中风险 |
+| `party_a_name` | 甲方名称 | string | ✅ **所有类型** | 高风险（主体信息缺失） |
+| `party_b_name` | 乙方名称 | string | ✅ **所有类型** | 高风险 |
+| `party_a_credit_code` | 甲方统一社会信用代码 | string | ✅ **所有类型** | 中风险 |
+| `party_b_credit_code` | 乙方统一社会信用代码 | string | ✅ **所有类型** | 中风险 |
 | `contract_no` | 合同编号 | string | ❌ | — |
-| `amount` | 合同金额 | decimal | ✅ | 中风险 |
-| `currency` | 币种 | string | ✅ | 中风险 |
+| `amount` | 合同金额 | decimal | ✅ **仅交易类** | 中风险 |
+| `currency` | 币种 | string | ✅ **仅交易类** | 中风险 |
 | `term` | 履行期限 | string | ❌ | 中风险 |
 | `effective_condition` | 生效条件 | string | ❌ | 低风险 |
 | `sign_date` | 签订日期 | date | ❌ | — |
 | `sign_place` | 签订地点 | string | ❌ | — |
+
+**"必需"为什么要分业务类型**（批次 9）：`amount` / `currency` 只对**交易类**
+合同（`purchase` / `sales` / `service`）有意义——劳动合同根本没有"合同金额"这个
+字段，用同一份清单会让**每份劳动合同都必报"合同金额缺失"**。这类稳定的假阳性
+会训练用户忽略告警，比漏报更伤。签约主体（`party_a_name` / `party_b_name`）
+则各类合同通用：用人单位与劳动者同样是签约主体。
+
+实现见 `review/global_checker.py`：`REQUIRED_METADATA_COMMON` +
+`REQUIRED_METADATA_TRANSACTIONAL`（后者仅当 `business_type ∈ _TRANSACTIONAL_TYPES` 才追加）。
 
 > **提取状态**（批次 5）：上表 11 个键中，`party_a_name` / `party_b_name` /
 > `party_a_credit_code` / `party_b_credit_code` / `contract_no` / `amount` /
@@ -954,7 +963,7 @@ erDiagram
 |---|---|---|---|---|
 | `id` | BIGINT UNSIGNED | ❌ | AUTO | 主键 |
 | `template_id` | BIGINT UNSIGNED | ❌ | — | FK → `rule_template.id` |
-| `code` | VARCHAR(64) | ❌ | — | 规则编码，如 `LIABILITY_UNEQUAL` |
+| `code` | VARCHAR(64) | ❌ | — | 规则编码，如 `LIABILITY_ASYMMETRY` |
 | `name` | VARCHAR(128) | ❌ | — | 规则名称 |
 | `category` | VARCHAR(32) | ❌ | — | `RiskCategory` |
 | `risk_level` | VARCHAR(8) | ❌ | — | `RiskLevel` |
@@ -1340,27 +1349,35 @@ flowchart LR
 | 表 | 内容 | 条数 |
 |---|---|---|
 | `rule_template` | 采购 / 销售 / 服务 / 劳动 各一套 | 4 |
-| `rule` | 按架构文档 §8.5 阈值表 | ~20 |
-| `rule_condition` | 每条规则 1~3 个条件 | ~40 |
+| `rule` | 按业务类型分组（见下），对应架构文档 §8.5 | 27 |
+| `rule_condition` | 每条规则 0~3 个条件 | ~40 |
 | `standard_clause` | 各条款类型的标准文本 | ~15 |
 | `subject_blacklist` | 虚构的异常主体（演示用） | 5 |
 
-**规则种子（对应架构文档 §8.5）**
+**规则种子按业务类型分组**（批次 9 修正）
 
-| code | 名称 | 等级 | 类型 |
-|---|---|---|---|
-| `LIABILITY_UNCAPPED` | 违约责任无上限 | high | keyword |
-| `LIABILITY_UNEQUAL` | 违约责任不对等 | high | threshold |
-| `JURISDICTION_INVALID` | 管辖地约定违规 | high | blacklist |
-| `NO_ACCEPTANCE_BEFORE_PAY` | 未设置付款前置验收 | high | presence |
-| `IP_TRANSFER_ALL` | 知识产权全部转让对方 | high | keyword |
-| `SUBJECT_MISSING` | 主体信息缺失 | high | presence |
-| `SUBJECT_ABNORMAL` | 主体列入经营异常 | high | blacklist |
-| `PENALTY_OVER_LIMIT` | 违约金比例超限 | medium | threshold |
-| `CONFIDENTIALITY_NO_TERM` | 保密义务无期限 | medium | presence |
-| `FORCE_MAJEURE_NO_NOTICE` | 不可抗力无通知时效 | medium | presence |
-| `AMOUNT_MISSING` | 合同金额缺失 | medium | presence |
-| `CURRENCY_MISSING` | 币种缺失 | medium | presence |
+⚠️ 原先**所有规则都挂在"采购合同"模板下**，其余三个模板是空壳。只有采购合同是
+真实输入时问题不显；一旦有销售/劳动合同，就变成两类实际故障：
+① 这两类合同加载不到任何规则，确定性规则引擎 0 命中，只剩 LLM；
+② 采购规则（要求"标的物"、"付款条款内必须提验收"）与劳动场景完全不搭。
+
+| 模板 | 条数 | 规则 |
+|---|---|---|
+| `purchase` 采购 | 12 | `LIABILITY_UNCAPPED` / `LIABILITY_ASYMMETRY` / `JURISDICTION_INVALID` / `NO_ACCEPTANCE_BEFORE_PAY` / `IP_TRANSFER_ALL` / `SUBJECT_MISSING` / `SUBJECT_ABNORMAL` / `PENALTY_OVER_LIMIT` / `CONFIDENTIALITY_NO_TERM` / `FORCE_MAJEURE_NO_NOTICE` / `AMOUNT_MISSING` / `CURRENCY_MISSING` |
+| `sales` 销售 | 8 | `LIABILITY_ASYMMETRY` / `LIABILITY_UNCAPPED` / `JURISDICTION_INVALID` / `SUBJECT_MISSING` / `SUBJECT_ABNORMAL` / `PENALTY_OVER_LIMIT` / `CONFIDENTIALITY_NO_TERM` / `FORCE_MAJEURE_NO_NOTICE` |
+| `labor` 劳动 | 7 | `PROBATION_PAY_LOW` / `SOCIAL_INSURANCE_WAIVED` / `WORKER_LIQUIDATED_DAMAGES` / `OVERTIME_WAIVED` / `NON_COMPETE_NO_COMPENSATION` / `CONFIDENTIALITY_NO_TERM` / `SUBJECT_MISSING` |
+| `service` 服务 | **0** | —（已知缺口，见 `architecture.md` R18） |
+
+**两条批次 9 新增的规则**
+
+| code | 名称 | 等级 | 类型 | 关键配置 |
+|---|---|---|---|---|
+| `LIABILITY_ASYMMETRY` | 违约责任不对等 | high | threshold | `metric=liability_asymmetry`，`severe_keywords` / `mild_keywords` / `mild_ratio_max`（**无 threshold**） |
+| `PROBATION_PAY_LOW` | 试用期工资低于法定下限 | high | threshold | `metric=probation_pay_ratio`，`threshold=0.8`，`direction=lt` |
+
+> ⚠️ `seed_rules` 会**清理 stale 规则**：`(template_id, code)` 唯一索引让"改挂的规则"
+> 作为**孤儿规则**留在原模板继续生效（例如劳动合同的规则跑到采购合同上）。
+> 这与批次 7/9 的"配了等于没配"同源——配置与预期不一致却无告警。
 
 > ⚠️ **阈值来自架构文档 §8.5，是演示用拟值，不是法律意见。**
 
